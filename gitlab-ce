@@ -1,0 +1,15 @@
+#Quick Installation
+1. DEB
+curl -s https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | sudo bash
+
+2. RPM
+curl -s https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.rpm.sh | sudo bash
+
+3. Node
+curl -s https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.node.sh | bash
+
+4. Python
+curl -s https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.python.sh | bash
+
+6. Gem
+curl -s https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.gem.sh | bash
