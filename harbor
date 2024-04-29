@@ -1,0 +1,62 @@
+#Check update
+apt update -y
+
+#Remove Old Package
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl -y
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+
+
+#Install Docker
+sudo apt-get install wget docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+
+#Chnage directory to /opt
+cd /opt
+
+#Download Harbor v.2.9.4
+wget https://github.com/goharbor/harbor/releases/download/v2.9.4/harbor-offline-installer-v2.9.4.tgz
+
+#Extract 
+tar xzvf /opt/harbor-offline-installer-v2.9.4.tgz
+
+#Change directory to harbor
+cd /opt/harbor/
+
+#Copy harbor YML File
+cp harbor.yml.tmpl harbor.yml
+
+#String Replacement
+sudo sed -i \
+-e 's/hostname: reg\.mydomain\.com/hostname: localhost/g' \
+-e 's/https:/#https:/g' \
+-e 's/port: 443/#port: 443/g' \
+-e 's/certificate: \/your\/certificate\/path/#certificate: \/your\/certificate\/path/g' \
+-e 's/private_key: \/your\/private\/key\/path/#private_key: \/your\/private\/key\/path/g' \
+-e 's/harbor_admin_password: Harbor12345/harbor_admin_password: Laxman007*/g' \
+-e 's/password: root123/password: root/g' \
+/opt/harbor/harbor.yml
+
+#Install
+bash /opt/harbor/install.sh
+
+echo ""
+echo "****************************************************"
+echo "Your Configuration file is present on /opt/harbor/harbor.yml"
+echo "Dashboard login password is Laxman007* "
+echo "****************************************************"
+echo ""
+
+
+# Add to crontab
+echo "@reboot sleep 5 && cd /opt/harbot/ && docker compose up -d" | EDITOR=vim crontab -
