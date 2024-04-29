@@ -1,5 +1,7 @@
 echo ""
 echo "********************************************************************************************************"
+echo "*******************************.....Initializing Harbor Setup....***************************************"
+echo "********************************************************************************************************"
 echo ""
 
 #Check update
@@ -65,10 +67,9 @@ bash /opt/harbor/install.sh
 echo "@reboot sleep 5 && cd /opt/harbor/ && docker compose up -d" | EDITOR=vim crontab - > /dev/null 2>&1
 
 #Save Credentials
-echo "URL: <Your_Machine_IP>
+echo "URL: http://$(curl -s icanhazip.com)
 user: admin
 password: DevOpsByAlex" | sudo tee /root/.harbor-credentials >/dev/null
-
 
 #Display Credentials
 echo "Your Credentials is"
