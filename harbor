@@ -1,40 +1,47 @@
+echo ""
+echo "********************************************************************************************************"
+echo ""
+
 #Check update
-apt update -y
+apt update -y > /dev/null 2>&1
 
 #Remove Old Package
-for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove -y $pkg > /dev/null 2>&1; done
+
 
 # Add Docker's official GPG key:
-sudo apt-get update
-sudo apt-get install ca-certificates curl -y
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+apt update -y > /dev/null 2>&1
+sudo apt-get install ca-certificates curl -y > /dev/null 2>&1
+sudo install -m 0755 -d /etc/apt/keyrings > /dev/null 2>&1
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc > /dev/null 2>&1
 
 # Add the repository to Apt sources:
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
+sudo apt-get update > /dev/null 2>&1
 
 
 #Install Docker
-sudo apt-get install wget docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+sudo apt-get install wget docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y > /dev/null 2>&1
 
 #Chnage directory to /opt
-cd /opt
+cd /opt 
 
 #Download Harbor v.2.9.4
+echo "Downloading Package..."
 wget https://github.com/goharbor/harbor/releases/download/v2.9.4/harbor-offline-installer-v2.9.4.tgz
+echo ""
 
 #Extract 
-tar xzvf /opt/harbor-offline-installer-v2.9.4.tgz
+tar xzvf /opt/harbor-offline-installer-v2.9.4.tgz > /dev/null 2>&1
 
 #Change directory to harbor
-cd /opt/harbor/
+cd /opt/harbor/ > /dev/null 2>&1
 
 #Copy harbor YML File
-cp harbor.yml.tmpl harbor.yml
+cp harbor.yml.tmpl harbor.yml > /dev/null 2>&1
 
 #String Replacement
 sudo sed -i \
@@ -43,20 +50,31 @@ sudo sed -i \
 -e 's/port: 443/#port: 443/g' \
 -e 's/certificate: \/your\/certificate\/path/#certificate: \/your\/certificate\/path/g' \
 -e 's/private_key: \/your\/private\/key\/path/#private_key: \/your\/private\/key\/path/g' \
--e 's/harbor_admin_password: Harbor12345/harbor_admin_password: Laxman007*/g' \
+-e 's/harbor_admin_password: Harbor12345/harbor_admin_password: DevOpsByLaxman/g' \
 -e 's/password: root123/password: root/g' \
-/opt/harbor/harbor.yml
+/opt/harbor/harbor.yml > /dev/null 2>&1
+
+echo ""
+echo "Initializing Installation...."
 
 #Install
 bash /opt/harbor/install.sh
 
-echo ""
-echo "****************************************************"
-echo "Your Configuration file is present on /opt/harbor/harbor.yml"
-echo "Dashboard login password is Laxman007* "
-echo "****************************************************"
-echo ""
-
 
 # Add to crontab
-echo "@reboot sleep 5 && cd /opt/harbot/ && docker compose up -d" | EDITOR=vim crontab -
+echo "@reboot sleep 5 && cd /opt/harbor/ && docker compose up -d" | EDITOR=vim crontab - > /dev/null 2>&1
+
+#Save Credentials
+echo "URL: <Your_Machine_IP>
+user: admin
+password: DevOpsByAlex" | sudo tee /root/.harbor-credentials >/dev/null
+
+
+#Display Credentials
+echo "Your Credentials is"
+echo ""
+cat /root/.harbor-credentials
+echo ""
+
+#Display List docker docker images
+docker ps
