@@ -1,0 +1,22 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: always
+    hostname: 'gitlab.example.com'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://gitlab.examle.com'
+        nginx['redirect_http_to_https'] = true
+ #       nginx['ssl_certificate'] = "/etc/gitlab/ssl/certificate.pem"
+ #       nginx['ssl_certificate_key'] = "/etc/gitlab/ssl/private.key"
+      GITLAB_ROOT_PASSWORD: 'Laxman007*'
+    ports:
+      - "80:80"    # HTTP
+ #     - "443:443"  # HTTPS
+      - "22:22"    # SSH
+    volumes:
+      - ./srv/gitlab/config:/etc/gitlab
+      - ./srv/gitlab/logs:/var/log/gitlab
+      - ./srv/gitlab/data:/var/opt/gitlab
+#      - ./srv/gitlab/ssl:/etc/gitlab/ssl/
