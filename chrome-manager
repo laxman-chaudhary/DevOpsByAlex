@@ -1,0 +1,168 @@
+#!/bin/bash
+
+################################################################################
+#  Script: chrome-manager
+#  Author: Alex (DevOps by Alex)
+#  Created: March 15, 2025
+#  Purpose: A single script to install or uninstall Google Chrome (portable)
+#           and ChromeDriver on Linux.
+#           Usage:
+#             - Install:    ./chrome-manager install
+#             - Uninstall:  ./chrome-manager uninstall
+#             - Help:       ./chrome-manager help
+################################################################################
+
+# Define Colors
+GREEN="\e[32m"
+YELLOW="\e[33m"
+RED="\e[31m"
+CYAN="\e[36m"
+BOLD="\e[1m"
+RESET="\e[0m"
+
+# Define download URLs
+CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.88/linux64/chrome-linux64.zip"
+CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.88/linux64/chromedriver-linux64.zip"
+
+# Define file paths
+CHROME_ARCHIVE="chrome-linux64.zip"
+CHROMEDRIVER_ARCHIVE="chromedriver-linux64.zip"
+CHROME_DIR="/opt/chrome-linux"
+CHROME_BIN="/usr/bin/chrome"
+CHROMEDRIVER_BIN="/usr/bin/chromedriver"
+CHROMEDRIVER_DIR="chromedriver-linux64"
+
+# Function: Show help menu
+show_help() {
+    echo -e "${CYAN}Usage: ./chrome-manager [install | uninstall | help]${RESET}"
+    echo -e "  install    - Installs Google Chrome and ChromeDriver"
+    echo -e "  uninstall  - Removes Google Chrome and ChromeDriver"
+    echo -e "  help       - Displays this help message"
+    exit 0
+}
+
+# Function: Install dependencies
+install_dependencies() {
+    echo -e "${YELLOW}Checking for missing dependencies...${RESET}"
+    sudo apt update && sudo apt install -y \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libgdk-pixbuf2.0-0 \
+        libglib2.0-0 \
+        libnss3 \
+        libxrandr2 \
+        libxcursor1 \
+        libxss1 \
+        libasound2 \
+        libnspr4 \
+        libgconf-2-4 \
+        libxkbcommon-x11-0 \
+        libgbm1 \
+        libwayland-client0 \
+        libwayland-egl1 \
+        libdrm2 \
+        libexpat1 \
+        libfontconfig1 \
+        libfreetype6 \
+        libxrender1 \
+        libxshmfence1 \
+        libxinerama1 \
+        libx11-xcb1
+    echo -e "${GREEN}Dependencies installed successfully.${RESET}"
+}
+
+# Function: Download files with progress bar
+download_file() {
+    local url=$1
+    local file=$2
+
+    echo -e "${YELLOW}Downloading ${file}...${RESET}"
+    sleep 1
+
+    if command -v pv &>/dev/null; then
+        wget -q --show-progress "$url" -O "$file" 2>&1 | pv -lep -s 100 >/dev/null
+    else
+        wget --progress=bar:force "$url" -O "$file"
+    fi
+
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}Error: Failed to download ${file}.${RESET}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}${file} downloaded successfully!${RESET}"
+    sleep 1
+}
+
+# Function: Install Chrome and ChromeDriver
+install_chrome() {
+    echo -e "${CYAN}Starting Chrome and ChromeDriver installation...${RESET}"
+    sleep 1
+
+    # Install pv if not installed
+    if ! command -v pv &>/dev/null; then
+        echo -e "${YELLOW}Installing pv for progress bar support...${RESET}"
+        sudo apt update && sudo apt install -y pv
+    fi
+
+    # Auto-download missing files
+    [[ ! -f "$CHROME_ARCHIVE" ]] && download_file "$CHROME_URL" "$CHROME_ARCHIVE"
+    [[ ! -f "$CHROMEDRIVER_ARCHIVE" ]] && download_file "$CHROMEDRIVER_URL" "$CHROMEDRIVER_ARCHIVE"
+
+    # Check if existing installation is present
+    if [[ -d "$CHROME_DIR" || -f "$CHROMEDRIVER_BIN" ]]; then
+        echo -e "${RED}Existing installation found!${RESET}"
+        echo -e "${YELLOW}Do you want to remove the old version and install fresh? (y/N): ${RESET}"
+        read -r response
+        if [[ "$response" != "y" && "$response" != "Y" ]]; then
+            echo -e "${CYAN}Installation aborted by user.${RESET}"
+            exit 1
+        fi
+        sudo rm -rf "$CHROME_DIR" "$CHROMEDRIVER_BIN"
+        sleep 2
+    fi
+
+    # Extract and install
+    unzip -q "$CHROME_ARCHIVE"
+    unzip -q "$CHROMEDRIVER_ARCHIVE"
+    sudo mv chrome-linux64 "$CHROME_DIR"
+    sudo cp "$CHROMEDRIVER_DIR/chromedriver" "$CHROMEDRIVER_BIN"
+    sudo ln -sfn "$CHROME_DIR/chrome" "$CHROME_BIN"
+    sudo chmod +x "$CHROMEDRIVER_BIN" "$CHROME_DIR/chrome"
+    rm -rf "$CHROMEDRIVER_DIR"
+
+    echo -e "${GREEN}Installation completed successfully!${RESET}"
+}
+
+# Function: Uninstall Chrome and ChromeDriver
+uninstall_chrome() {
+    echo -e "${RED}This will remove Chrome and ChromeDriver from your system.${RESET}"
+    echo -e "${YELLOW}Are you sure you want to continue? (y/N): ${RESET}"
+    read -r response
+    if [[ "$response" != "y" && "$response" != "Y" ]]; then
+        echo -e "${CYAN}Uninstallation aborted.${RESET}"
+        exit 1
+    fi
+
+    sudo rm -rf "$CHROME_DIR" "$CHROME_BIN" "$CHROMEDRIVER_BIN"
+    echo -e "${GREEN}Uninstallation completed successfully!${RESET}"
+}
+
+# Main script logic: Handle command-line arguments
+case "$1" in
+    install)
+        install_chrome
+        ;;
+    uninstall)
+        uninstall_chrome
+        ;;
+    help|*)
+        show_help
+        ;;
+esac
