@@ -3,29 +3,30 @@
 # Colors and formatting
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[1;35m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # === Load config ===
 CONFIG_FILE="/etc/custom-banner.conf"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 
-# Defaults
 QUIET_MODE=${QUIET_MODE:-false}
 ENABLE_LOGGING=${ENABLE_LOGGING:-true}
 SHOW_DOCKER=${SHOW_DOCKER:-true}
 ENVIRONMENT=${ENVIRONMENT:-dev}
+SHOW_POSTGRES=${SHOW_POSTGRES:-true}
+SHOW_MYSQL=${SHOW_MYSQL:-true}
 
-# === Quit early if QUIET_MODE is enabled ===
+# === Exit if quiet mode ===
 if [ "$QUIET_MODE" == "true" ]; then
   exit 0
 fi
 
-# === System Information ===
+# === System Info ===
 HOSTNAME=$(hostname)
 IP=$(hostname -I | awk '{print $1}')
 CPU_LOAD=$(top -bn1 | grep "load average" | awk '{print $12 $13 $14}')
@@ -44,35 +45,39 @@ CURRENT_USER=$(whoami)
 SSH_SOURCE=$(who | grep "$CURRENT_USER" | awk '{print $5}' | tr -d '()' | head -n1)
 DATETIME=$(date '+%Y-%m-%d %H:%M:%S')
 
-# === Docker and Systemd Info ===
+# Docker/Systemd Info
 if [ "$SHOW_DOCKER" == "true" ] && command -v docker &> /dev/null; then
   DOCKER_COUNT=$(docker ps -q | wc -l)
   SHOW_DOCKER_STATS=true
 else
   SHOW_DOCKER_STATS=false
 fi
-
 FAILED_SERVICES=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
 
-# === ASCII Art Header ===
+# ASCII Banner
 if command -v figlet &> /dev/null; then
   echo -e "${CYAN}"
   figlet -f slant "$HOSTNAME"
   echo -e "${NC}"
 fi
 
-# === Environment Tag ===
-echo -e "${CYAN}${BOLD}🧩 Environment: ${ENVIRONMENT^^}${NC}"
+# === Environment Label Color ===
+case "$ENVIRONMENT" in
+  prod|production) ENV_COLOR=$RED ;;
+  staging) ENV_COLOR=$YELLOW ;;
+  *) ENV_COLOR=$GREEN ;;
+esac
+echo -e "${ENV_COLOR}${BOLD}🧩 Environment: ${ENVIRONMENT^^}${NC}"
 echo -e ""
 
 # === Welcome Message ===
-echo -e "${BOLD}${CYAN}📢 Welcome to the Development Server${NC}"
+echo -e "${BOLD}${CYAN}📢 Welcome to the ${ENVIRONMENT^^} Server${NC}"
 echo -e "📬 Please report issues or access requests to the DevOps team"
 echo -e "🔧 Managed by: ${RED}${BOLD}DevOps Alex${NC}"
 echo -e "🔑 Logged in as: ${BOLD}$CURRENT_USER${NC} from ${SSH_SOURCE:-unknown}"
 echo -e ""
 
-# === Warnings / Alerts ===
+# === Alerts ===
 [[ $(echo "$LOAD_VALUE > 2.0" | bc -l) -eq 1 ]] && CPU_LOAD="${RED}${CPU_LOAD} ⚠️${NC}"
 [[ "$DISK_PERCENT" -gt 80 ]] && DISK_USAGE="${RED}${DISK_USAGE_RAW} ⚠️${NC}" || DISK_USAGE="$DISK_USAGE_RAW"
 
@@ -105,20 +110,37 @@ if [ "$SHOW_DOCKER_STATS" == "true" ]; then
   echo -e ""
 fi
 
-# === PostgreSQL Access Info ===
-echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
-echo -e "To connect to the database, run the following:"
-echo -e "${YELLOW}${BOLD}📥 psql -h db-server-dev -U postgres${NC}"
-echo -e "${BOLD}🔐 Password:${NC} password"
-echo -e ""
+# === PostgreSQL Access ===
+if [ "$SHOW_POSTGRES" == "true" ]; then
+  echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
+  echo -e "To connect to the database, run the following:"
+  echo -e "${YELLOW}${BOLD}📥 psql -h db-server-dev -U postgres${NC}"
+  echo -e "${BOLD}🔐 Password:${NC} password"
+  echo -e ""
+fi
+
+# === MySQL Access ===
+if [ "$SHOW_MYSQL" == "true" ]; then
+  echo -e "${MAGENTA}${BOLD}🐘 ===== MySQL Access =====${NC}"
+  echo -e "To connect to the database, run the following:"
+  echo -e "${YELLOW}${BOLD}📥 mysql -h db-server-dev -u root${NC}"
+  echo -e "${BOLD}🔐 Password:${NC} password"
+  echo -e ""
+fi
 
 # === Footer ===
 echo -e "${CYAN}🚀 Happy developing! Stay productive and secure.${NC}"
 echo -e "${BLUE}${BOLD}🧾 MOTD generated at: ${DATETIME}${NC}"
 echo -e "${GREEN}${BOLD}==============================================${NC}"
+
+# === DevOps by Alex Branding ===
+echo -e "${NC}${BOLD}🧠 DevOps by Alex${NC}"
+echo -e "🔗 LinkedIn: https://www.linkedin.com/in/laxman-chaudhary/"
+echo -e "🌐 Website : https://laxmanchaudhary.com/"
+echo -e "📧 Contact : support@chaudharylaxman.com.np"
 echo -e ""
 
-# === JSON Logging (optional) ===
+# === Logging ===
 if [ "$ENABLE_LOGGING" == "true" ]; then
   LOG_FILE="/var/log/custom-banner.log"
   sudo tee $LOG_FILE >/dev/null <<EOF
