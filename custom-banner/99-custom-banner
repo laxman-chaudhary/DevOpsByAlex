@@ -10,6 +10,24 @@ MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
+# Config (optional behavior control)
+CONFIG_FILE="/etc/custom-banner.conf"
+if [ -f "$CONFIG_FILE" ]; then
+  source "$CONFIG_FILE"
+fi
+
+# Apply defaults if not set
+QUIET_MODE=${QUIET_MODE:-false}
+ENABLE_LOGGING=${ENABLE_LOGGING:-true}
+SHOW_DOCKER=${SHOW_DOCKER:-true}
+ENVIRONMENT=${ENVIRONMENT:-dev}
+
+# Quiet mode
+if [ "$QUIET_MODE" == "true" ]; then
+  exit 0
+fi
+
+
 # Config (optional quiet mode)
 CONFIG_FILE="/etc/custom-banner.conf"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
