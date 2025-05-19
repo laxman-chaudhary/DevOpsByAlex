@@ -1,0 +1,130 @@
+#!/bin/bash
+
+# Colors and formatting
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+MAGENTA='\033[1;35m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Config (optional quiet mode)
+CONFIG_FILE="/etc/custom-banner.conf"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+if [ "$QUIET_MODE" == "true" ]; then exit 0; fi
+
+# System info
+HOSTNAME=$(hostname)
+IP=$(hostname -I | awk '{print $1}')
+CPU_LOAD=$(top -bn1 | grep "load average" | awk '{print $12 $13 $14}')
+LOAD_VALUE=$(echo "$CPU_LOAD" | cut -d ',' -f1)
+MEM_USAGE=$(free -h | awk '/Mem:/ {print $3 "/" $2}')
+DISK_USAGE_RAW=$(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')
+DISK_PERCENT=$(echo "$DISK_USAGE_RAW" | grep -oP '[0-9]+(?=%)')
+UPTIME=$(uptime -p)
+LAST_REBOOT=$(who -b | awk '{print $3 " " $4}')
+LOGGED_USERS=$(who | awk '{print $1 " (" $2 ")"}' | sort -u)
+UPDATES=$(apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
+SWAP=$(free -h | awk '/Swap:/ {print $3 "/" $2}')
+FIREWALL=$(ufw status | grep -q "Status: active" && echo "Active" || echo "Inactive")
+TIMEZONE=$(timedatectl | awk -F': ' '/Time zone/ {print $2}')
+CURRENT_USER=$(whoami)
+SSH_SOURCE=$(who | grep "$CURRENT_USER" | awk '{print $5}' | tr -d '()' | head -n1)
+DATETIME=$(date '+%Y-%m-%d %H:%M:%S')
+
+# Optional Docker/systemd info
+if command -v docker &> /dev/null; then
+    DOCKER_COUNT=$(docker ps -q | wc -l)
+else
+    DOCKER_COUNT="N/A"
+fi
+
+FAILED_SERVICES=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
+
+# ASCII Art Header
+if command -v figlet >/dev/null; then
+    echo -e "${CYAN}"
+    figlet -f slant "$HOSTNAME"
+    echo -e "${NC}"
+fi
+
+# Server Role Tagline
+echo -e "${CYAN}${BOLD}🧩 Role: Application Development Server (Dev Environment)${NC}"
+echo -e ""
+
+# Welcome / Info Message
+echo -e "${BOLD}${CYAN}📢 Welcome to the Development Server${NC}"
+echo -e "📬 Please report issues or access requests to the DevOps team"
+echo -e "🔧 Managed by: ${RED}${BOLD}DevOps Alex${NC}"
+echo -e "🔑 Logged in as: ${BOLD}$CURRENT_USER${NC} from ${SSH_SOURCE:-unknown}"
+echo -e ""
+
+# System Information
+# Apply alerts
+[[ $(echo "$LOAD_VALUE > 2.0" | bc -l) -eq 1 ]] && CPU_LOAD="${RED}${CPU_LOAD} ⚠️${NC}"
+[[ "$DISK_PERCENT" -gt 80 ]] && DISK_USAGE="${RED}${DISK_USAGE_RAW} ⚠️${NC}" || DISK_USAGE="$DISK_USAGE_RAW"
+
+echo -e "${GREEN}${BOLD}🖥️  ===== System Information =====${NC}"
+echo -e "🔹 ${BOLD}Hostname:      ${NC}$HOSTNAME"
+echo -e "🔹 ${BOLD}IP Address:    ${NC}$IP"
+echo -e "📊 ${BOLD}CPU Load:      ${NC}$CPU_LOAD"
+echo -e "💾 ${BOLD}Memory Usage:  ${NC}$MEM_USAGE"
+echo -e "🗄️  ${BOLD}Disk Usage:    ${NC}$DISK_USAGE"
+echo -e ""
+
+# Server Status
+echo -e "${BLUE}${BOLD}📊 ===== Server Status =====${NC}"
+echo -e "⏱  ${BOLD}Uptime:         ${NC}$UPTIME"
+echo -e "🔁  ${BOLD}Last Reboot:    ${NC}$LAST_REBOOT"
+echo -e "📦  ${BOLD}Updates Pending:${NC} $UPDATES packages"
+echo -e "🔒  ${BOLD}Firewall Status:${NC} $FIREWALL"
+echo -e "🧠  ${BOLD}Swap Usage:     ${NC}$SWAP"
+echo -e "🕒  ${BOLD}Timezone:       ${NC}$TIMEZONE"
+echo -e "👥  ${BOLD}Logged-in Users:${NC}"
+echo -e "$LOGGED_USERS"
+echo -e ""
+
+# Extra Info
+echo -e "${YELLOW}${BOLD}⚙️  ===== Services & Containers =====${NC}"
+echo -e "🐳 ${BOLD}Running Containers:${NC} $DOCKER_COUNT"
+echo -e "❌ ${BOLD}Failed Services:   ${NC} $FAILED_SERVICES"
+echo -e ""
+
+# Postgres Info
+echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
+echo -e "To connect to the database, run the following:"
+echo -e "${YELLOW}${BOLD}📥 psql -h db-server-dev -U postgres${NC}"
+echo -e "${BOLD}🔐 Password:${NC} password"
+echo -e ""
+
+# Final footer
+echo -e "${CYAN}🚀 Happy developing! Stay productive and secure.${NC}"
+#echo -e "${BLUE}${BOLD}🧾 MOTD generated at: ${DATETIME}${NC}"
+echo -e "${GREEN}${BOLD}==============================================${NC}"
+echo -e ""
+
+# JSON log export
+LOG_FILE="/var/log/custom-banner.log"
+sudo tee $LOG_FILE >/dev/null <<EOF
+{
+  "timestamp": "$(date -Iseconds)",
+  "hostname": "$HOSTNAME",
+  "ip": "$IP",
+  "cpu_load": "$CPU_LOAD",
+  "memory_usage": "$MEM_USAGE",
+  "disk_usage": "$DISK_USAGE_RAW",
+  "uptime": "$UPTIME",
+  "last_reboot": "$LAST_REBOOT",
+  "logged_users": "$(echo "$LOGGED_USERS" | tr '\n' ',' | sed 's/,$//')",
+  "updates": "$UPDATES",
+  "swap_usage": "$SWAP",
+  "firewall": "$FIREWALL",
+  "timezone": "$TIMEZONE",
+  "docker_containers": "$DOCKER_COUNT",
+  "failed_services": "$FAILED_SERVICES",
+  "user": "$CURRENT_USER",
+  "ssh_source": "${SSH_SOURCE:-unknown}"
+}
+EOF
