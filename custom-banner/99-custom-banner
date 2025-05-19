@@ -10,30 +10,22 @@ MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Config (optional behavior control)
+# === Load config ===
 CONFIG_FILE="/etc/custom-banner.conf"
-if [ -f "$CONFIG_FILE" ]; then
-  source "$CONFIG_FILE"
-fi
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 
-# Apply defaults if not set
+# Defaults
 QUIET_MODE=${QUIET_MODE:-false}
 ENABLE_LOGGING=${ENABLE_LOGGING:-true}
 SHOW_DOCKER=${SHOW_DOCKER:-true}
 ENVIRONMENT=${ENVIRONMENT:-dev}
 
-# Quiet mode
+# === Quit early if QUIET_MODE is enabled ===
 if [ "$QUIET_MODE" == "true" ]; then
   exit 0
 fi
 
-
-# Config (optional quiet mode)
-CONFIG_FILE="/etc/custom-banner.conf"
-[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
-if [ "$QUIET_MODE" == "true" ]; then exit 0; fi
-
-# System info
+# === System Information ===
 HOSTNAME=$(hostname)
 IP=$(hostname -I | awk '{print $1}')
 CPU_LOAD=$(top -bn1 | grep "load average" | awk '{print $12 $13 $14}')
@@ -52,38 +44,39 @@ CURRENT_USER=$(whoami)
 SSH_SOURCE=$(who | grep "$CURRENT_USER" | awk '{print $5}' | tr -d '()' | head -n1)
 DATETIME=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Optional Docker/systemd info
-if command -v docker &> /dev/null; then
-    DOCKER_COUNT=$(docker ps -q | wc -l)
+# === Docker and Systemd Info ===
+if [ "$SHOW_DOCKER" == "true" ] && command -v docker &> /dev/null; then
+  DOCKER_COUNT=$(docker ps -q | wc -l)
+  SHOW_DOCKER_STATS=true
 else
-    DOCKER_COUNT="N/A"
+  SHOW_DOCKER_STATS=false
 fi
 
 FAILED_SERVICES=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
 
-# ASCII Art Header
-if command -v figlet >/dev/null; then
-    echo -e "${CYAN}"
-    figlet -f slant "$HOSTNAME"
-    echo -e "${NC}"
+# === ASCII Art Header ===
+if command -v figlet &> /dev/null; then
+  echo -e "${CYAN}"
+  figlet -f slant "$HOSTNAME"
+  echo -e "${NC}"
 fi
 
-# Server Role Tagline
-echo -e "${CYAN}${BOLD}🧩 Role: Application Development Server (Dev Environment)${NC}"
+# === Environment Tag ===
+echo -e "${CYAN}${BOLD}🧩 Environment: ${ENVIRONMENT^^}${NC}"
 echo -e ""
 
-# Welcome / Info Message
+# === Welcome Message ===
 echo -e "${BOLD}${CYAN}📢 Welcome to the Development Server${NC}"
 echo -e "📬 Please report issues or access requests to the DevOps team"
 echo -e "🔧 Managed by: ${RED}${BOLD}DevOps Alex${NC}"
 echo -e "🔑 Logged in as: ${BOLD}$CURRENT_USER${NC} from ${SSH_SOURCE:-unknown}"
 echo -e ""
 
-# System Information
-# Apply alerts
+# === Warnings / Alerts ===
 [[ $(echo "$LOAD_VALUE > 2.0" | bc -l) -eq 1 ]] && CPU_LOAD="${RED}${CPU_LOAD} ⚠️${NC}"
 [[ "$DISK_PERCENT" -gt 80 ]] && DISK_USAGE="${RED}${DISK_USAGE_RAW} ⚠️${NC}" || DISK_USAGE="$DISK_USAGE_RAW"
 
+# === System Info ===
 echo -e "${GREEN}${BOLD}🖥️  ===== System Information =====${NC}"
 echo -e "🔹 ${BOLD}Hostname:      ${NC}$HOSTNAME"
 echo -e "🔹 ${BOLD}IP Address:    ${NC}$IP"
@@ -92,7 +85,7 @@ echo -e "💾 ${BOLD}Memory Usage:  ${NC}$MEM_USAGE"
 echo -e "🗄️  ${BOLD}Disk Usage:    ${NC}$DISK_USAGE"
 echo -e ""
 
-# Server Status
+# === Server Status ===
 echo -e "${BLUE}${BOLD}📊 ===== Server Status =====${NC}"
 echo -e "⏱  ${BOLD}Uptime:         ${NC}$UPTIME"
 echo -e "🔁  ${BOLD}Last Reboot:    ${NC}$LAST_REBOOT"
@@ -104,28 +97,31 @@ echo -e "👥  ${BOLD}Logged-in Users:${NC}"
 echo -e "$LOGGED_USERS"
 echo -e ""
 
-# Extra Info
-echo -e "${YELLOW}${BOLD}⚙️  ===== Services & Containers =====${NC}"
-echo -e "🐳 ${BOLD}Running Containers:${NC} $DOCKER_COUNT"
-echo -e "❌ ${BOLD}Failed Services:   ${NC} $FAILED_SERVICES"
-echo -e ""
+# === Docker / Systemd Info ===
+if [ "$SHOW_DOCKER_STATS" == "true" ]; then
+  echo -e "${YELLOW}${BOLD}⚙️  ===== Services & Containers =====${NC}"
+  echo -e "🐳 ${BOLD}Running Containers:${NC} $DOCKER_COUNT"
+  echo -e "❌ ${BOLD}Failed Services:   ${NC} $FAILED_SERVICES"
+  echo -e ""
+fi
 
-# Postgres Info
+# === PostgreSQL Access Info ===
 echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
 echo -e "To connect to the database, run the following:"
 echo -e "${YELLOW}${BOLD}📥 psql -h db-server-dev -U postgres${NC}"
 echo -e "${BOLD}🔐 Password:${NC} password"
 echo -e ""
 
-# Final footer
+# === Footer ===
 echo -e "${CYAN}🚀 Happy developing! Stay productive and secure.${NC}"
-#echo -e "${BLUE}${BOLD}🧾 MOTD generated at: ${DATETIME}${NC}"
+echo -e "${BLUE}${BOLD}🧾 MOTD generated at: ${DATETIME}${NC}"
 echo -e "${GREEN}${BOLD}==============================================${NC}"
 echo -e ""
 
-# JSON log export
-LOG_FILE="/var/log/custom-banner.log"
-sudo tee $LOG_FILE >/dev/null <<EOF
+# === JSON Logging (optional) ===
+if [ "$ENABLE_LOGGING" == "true" ]; then
+  LOG_FILE="/var/log/custom-banner.log"
+  sudo tee $LOG_FILE >/dev/null <<EOF
 {
   "timestamp": "$(date -Iseconds)",
   "hostname": "$HOSTNAME",
@@ -143,6 +139,8 @@ sudo tee $LOG_FILE >/dev/null <<EOF
   "docker_containers": "$DOCKER_COUNT",
   "failed_services": "$FAILED_SERVICES",
   "user": "$CURRENT_USER",
-  "ssh_source": "${SSH_SOURCE:-unknown}"
+  "ssh_source": "${SSH_SOURCE:-unknown}",
+  "environment": "$ENVIRONMENT"
 }
 EOF
+fi
