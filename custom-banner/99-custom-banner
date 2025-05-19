@@ -38,6 +38,7 @@ UPTIME=$(uptime -p)
 LAST_REBOOT=$(who -b | awk '{print $3 " " $4}')
 LOGGED_USERS=$(who | awk '{print $1 " (" $2 ")"}' | sort -u)
 UPDATES=$(apt list --upgradable 2>/dev/null | grep -v "Listing..." | wc -l)
+SECURITY_UPDATES=$(apt list --upgradable 2>/dev/null | grep -i security | wc -l)
 SWAP=$(free -h | awk '/Swap:/ {print $3 "/" $2}')
 FIREWALL=$(ufw status | grep -q "Status: active" && echo "Active" || echo "Inactive")
 TIMEZONE=$(timedatectl | awk -F': ' '/Time zone/ {print $2}')
@@ -61,13 +62,13 @@ if command -v figlet &> /dev/null; then
   echo -e "${NC}"
 fi
 
-# === Environment Label Color ===
+# === Environment Label with Background Color ===
 case "$ENVIRONMENT" in
-  prod|production) ENV_COLOR=$RED ;;
-  staging) ENV_COLOR=$YELLOW ;;
-  *) ENV_COLOR=$GREEN ;;
+  prod|production) ENV_COLOR_BG='\033[41m' ;;     # Red background
+  staging)         ENV_COLOR_BG='\033[43m' ;;     # Yellow background
+  *)               ENV_COLOR_BG='\033[42m' ;;     # Green background (dev)
 esac
-echo -e "${ENV_COLOR}${BOLD}🧩 Environment: ${ENVIRONMENT^^}${NC}"
+echo -e "${ENV_COLOR_BG}${BOLD}🧩 ENVIRONMENT: ${ENVIRONMENT^^} ${NC}"
 echo -e ""
 
 # === Welcome Message ===
@@ -95,6 +96,11 @@ echo -e "${BLUE}${BOLD}📊 ===== Server Status =====${NC}"
 echo -e "⏱  ${BOLD}Uptime:         ${NC}$UPTIME"
 echo -e "🔁  ${BOLD}Last Reboot:    ${NC}$LAST_REBOOT"
 echo -e "📦  ${BOLD}Updates Pending:${NC} $UPDATES packages"
+if [ "$SECURITY_UPDATES" -gt 0 ]; then
+  echo -e "🛡️  ${BOLD}Security Updates:${NC} ${RED}$SECURITY_UPDATES${NC} ⚠️"
+else
+  echo -e "🛡️  ${BOLD}Security Updates:${NC} ${GREEN}0${NC}"
+fi
 echo -e "🔒  ${BOLD}Firewall Status:${NC} $FIREWALL"
 echo -e "🧠  ${BOLD}Swap Usage:     ${NC}$SWAP"
 echo -e "🕒  ${BOLD}Timezone:       ${NC}$TIMEZONE"
@@ -155,6 +161,7 @@ if [ "$ENABLE_LOGGING" == "true" ]; then
   "last_reboot": "$LAST_REBOOT",
   "logged_users": "$(echo "$LOGGED_USERS" | tr '\n' ',' | sed 's/,$//')",
   "updates": "$UPDATES",
+  "security_updates": "$SECURITY_UPDATES",
   "swap_usage": "$SWAP",
   "firewall": "$FIREWALL",
   "timezone": "$TIMEZONE",
