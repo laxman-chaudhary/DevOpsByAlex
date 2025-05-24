@@ -36,6 +36,8 @@ if [ -f "$LOGROTATE_CONF" ]; then
     sudo rm -f "$LOGROTATE_CONF"
 fi
 
+# Fixing Permission
+sudo chmod -x "/etc/update-motd.d/*"
 # Optional: reload UFW if desired (just a safeguard step)
 # sudo ufw reload
 
