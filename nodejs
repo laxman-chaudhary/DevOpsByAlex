@@ -3,42 +3,78 @@
 # Ensure script runs in non-interactive mode
 export DEBIAN_FRONTEND=noninteractive
 
-# Avoid interactive pop-ups during installation
-sudo apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -yqq
+# === Parse arguments ===
+FORCE_REMOVE=false
+INTERACTIVE=false
+NODE_VERSION=""
 
-# Short delay for better readability
-sleep 2
+for arg in "$@"; do
+  case "$arg" in
+    18|20|22|23)
+      NODE_VERSION="$arg"
+      ;;
+    --force-remove)
+      FORCE_REMOVE=true
+      ;;
+    *)
+      echo "❌ Unknown argument: $arg"
+      echo "Usage: $0 [18|20|22|23] [--force-remove]"
+      exit 1
+      ;;
+  esac
+done
 
-echo "🔄 Checking for existing Node.js installation..."
-if command -v node &>/dev/null; then
-    NODE_VERSION_INSTALLED=$(node -v)
-    echo "⚠️ Node.js is already installed: $NODE_VERSION_INSTALLED"
-
-    # Ask user whether to remove it
-    while true; do
-        read -p "❓ Do you want to remove Node.js before installing a new version? (y/n): " REMOVE_NODE
-        case $REMOVE_NODE in
-            [Yy]* ) 
-                echo "🗑️ Removing existing Node.js installation..."
-                sudo apt-get remove --purge -yqq nodejs npm
-                sudo rm -rf /usr/local/lib/node_modules ~/.npm ~/.node-gyp /usr/local/bin/npm /usr/local/bin/node
-                echo "✅ Node.js has been removed."
-                sleep 2
-                break
-                ;;
-            [Nn]* )
-                echo "🚫 Node.js removal skipped. Exiting..."
-                exit 1
-                ;;
-            * ) echo "❌ Invalid input! Please enter 'y' for Yes or 'n' for No." ;;
-        esac
-    done
-else
-    echo "✅ No existing Node.js installation found. Proceeding..."
+# Set interactive mode if no version provided
+if [ -z "$NODE_VERSION" ]; then
+  INTERACTIVE=true
 fi
 
-# Display interactive menu for Node.js version selection
-while true; do
+# === System Preparation ===
+sudo apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -yqq
+sleep 2
+
+# === Check existing Node.js ===
+echo "🔄 Checking for existing Node.js installation..."
+if command -v node &>/dev/null; then
+  NODE_VERSION_INSTALLED=$(node -v)
+  echo "⚠️ Node.js is already installed: $NODE_VERSION_INSTALLED"
+
+  if [ "$FORCE_REMOVE" = true ]; then
+    echo "🗑️ Auto-removing existing Node.js..."
+    sudo apt-get remove --purge -yqq nodejs npm
+    sudo rm -rf /usr/local/lib/node_modules ~/.npm ~/.node-gyp /usr/local/bin/npm /usr/local/bin/node
+    echo "✅ Node.js has been removed."
+    sleep 2
+  elif [ "$INTERACTIVE" = true ]; then
+    while true; do
+      read -p "❓ Do you want to remove Node.js before installing a new version? (y/n): " REMOVE_NODE
+      case $REMOVE_NODE in
+        [Yy]* )
+          echo "🗑️ Removing Node.js..."
+          sudo apt-get remove --purge -yqq nodejs npm
+          sudo rm -rf /usr/local/lib/node_modules ~/.npm ~/.node-gyp /usr/local/bin/npm /usr/local/bin/node
+          echo "✅ Node.js has been removed."
+          sleep 2
+          break
+          ;;
+        [Nn]* )
+          echo "🚫 Node.js removal skipped. Exiting..."
+          exit 1
+          ;;
+        * ) echo "❌ Invalid input! Please enter 'y' or 'n'." ;;
+      esac
+    done
+  else
+    echo "🚫 Node.js exists. Use --force-remove or run interactively to replace it."
+    exit 1
+  fi
+else
+  echo "✅ No existing Node.js installation found. Proceeding..."
+fi
+
+# === Version Selection (Interactive) ===
+if [ "$INTERACTIVE" = true ]; then
+  while true; do
     echo "🔧 Select the Node.js version to install:"
     echo "1️⃣  Node.js 18.x"
     echo "2️⃣  Node.js 20.x"
@@ -47,40 +83,37 @@ while true; do
     echo "🔴  Press 'q' to exit"
 
     read -p "👉 Enter your choice: " choice
-
     case $choice in
-        1) NODE_VERSION="18"; break ;;
-        2) NODE_VERSION="20"; break ;;
-        3) NODE_VERSION="22"; break ;;
-        4) NODE_VERSION="23"; break ;;
-        q|Q) echo "🚫 Exiting..."; exit 1 ;;
-        *) echo "❌ Invalid input! Please select 1, 2, 3, 4, or 'q' to quit." ;;
+      1) NODE_VERSION="18"; break ;;
+      2) NODE_VERSION="20"; break ;;
+      3) NODE_VERSION="22"; break ;;
+      4) NODE_VERSION="23"; break ;;
+      q|Q) echo "🚫 Exiting..."; exit 1 ;;
+      *) echo "❌ Invalid input! Please choose 1, 2, 3, 4, or 'q'." ;;
     esac
-done
-
-# Confirm selection
-echo "✅ You selected Node.js $NODE_VERSION.x"
-
-# Install curl if not installed
-echo "🔄 Checking for curl..."
-if ! command -v curl &>/dev/null; then
-    echo "📦 Installing curl..."
-    sudo apt-get install -yqq curl
+  done
 else
-    echo "✅ Curl is already installed."
+  echo "✅ Installing Node.js version: $NODE_VERSION.x"
 fi
 
-# Download and run the Node.js setup script quietly
+# === Install curl if missing ===
+if ! command -v curl &>/dev/null; then
+  echo "📦 Installing curl..."
+  sudo apt-get install -yqq curl
+fi
+
+# === Install Node.js ===
 echo "🌍 Installing Node.js $NODE_VERSION.x..."
 curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash - > /dev/null 2>&1
-
-# Install Node.js silently
 sudo apt-get install -yqq --no-install-recommends nodejs
 
-# Install global npm packages silently
+# === Install Global npm Packages ===
 echo "🚀 Installing global npm packages (pm2, yarn, pnpm)..."
 sudo npm i -g pm2 yarn pnpm > /dev/null 2>&1
 
-# Cleanup
-sleep 2
-echo "🎉 Installation complete! Use 'node -v' and 'npm -v' to verify."
+# === Final Info ===
+sleep 1
+echo ""
+echo "🎉 ${NODE_VERSION}.x installation complete!"
+echo "📦 Node.js version: $(node -v)"
+echo "📦 npm version:     $(npm -v)"

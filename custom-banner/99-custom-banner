@@ -108,6 +108,27 @@ echo -e "👥  ${BOLD}Logged-in Users:${NC}"
 echo -e "$LOGGED_USERS"
 echo -e ""
 
+# === Node.js Info ===
+if [ "$SHOW_NODE" == "true" ]; then
+  echo -e "${MAGENTA}${BOLD}🟢 ===== Node.js Environment =====${NC}"
+
+  if command -v node >/dev/null 2>&1; then
+    NODE_VERSION=$(node -v)
+    echo -e "📦 ${BOLD}Node.js Version:${NC} $NODE_VERSION"
+  else
+    echo -e "📦 ${BOLD}Node.js Version:${NC} Not installed"
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    NPM_VERSION=$(npm -v)
+    echo -e "📦 ${BOLD}npm Version:    ${NC} $NPM_VERSION"
+  else
+    echo -e "📦 ${BOLD}npm Version:    ${NC} Not installed"
+  fi
+
+  echo -e ""
+fi
+
 # === Docker / Systemd Info ===
 if [ "$SHOW_DOCKER_STATS" == "true" ]; then
   echo -e "${YELLOW}${BOLD}⚙️  ===== Services & Containers =====${NC}"
@@ -120,10 +141,26 @@ fi
 if [ "$SHOW_POSTGRES" == "true" ]; then
   echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
   echo -e "To connect to the database, run the following:"
-  echo -e "${YELLOW}${BOLD}📥 psql -h db-server-dev -U postgres${NC}"
-  echo -e "${BOLD}🔐 Password:${NC} password"
+  echo -e "${YELLOW}${BOLD}📥 psql -h localhost -U postgres${NC}"
+  
+  if [ -f /root/.pg_password ]; then
+    PG_PASS=$(sudo cat /root/.pg_password)
+    echo -e "${BOLD}🔐 Password:${NC} $PG_PASS"
+  else
+    echo -e "${BOLD}🔐 Password:${NC} [NOT FOUND: /root/.pg_password]"
+  fi
+
   echo -e ""
 fi
+
+# # === PostgreSQL Access ===
+# if [ "$SHOW_POSTGRES" == "true" ]; then
+#   echo -e "${MAGENTA}${BOLD}🐘 ===== PostgreSQL Access =====${NC}"
+#   echo -e "To connect to the database, run the following:"
+#   echo -e "${YELLOW}${BOLD}📥 psql -h localhost -U postgres${NC}"
+#   echo -e "${BOLD}🔐 Password:${NC} password"
+#   echo -e ""
+# fi
 
 # === MySQL Access ===
 if [ "$SHOW_MYSQL" == "true" ]; then
