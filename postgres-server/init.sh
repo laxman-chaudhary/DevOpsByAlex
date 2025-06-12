@@ -45,7 +45,10 @@ if ! psql --version 2>/dev/null | grep -q "psql (PostgreSQL) 16"; then
   sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
     --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
 
-  sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt \$(lsb_release -cs)-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+  # Add PostgreSQL APT repo properly
+  echo "Adding PostgreSQL APT repository..."
+  echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+
 
   sudo apt update
   sudo apt install -y postgresql-client-16
