@@ -16,8 +16,9 @@ sudo apt install -y figlet bc lolcat ufw
 
 # === Step 2: Install MOTD banner script ===
 echo "📄 Installing MOTD script to ${DEST_MOTD}..."
+sudo mv "/etc/update-motd.d/" "/etc/update-motd.d_"
+sudo mkdir "/etc/update-motd.d/"
 sudo cp "$SRC_DIR/$SCRIPT_NAME" "$DEST_MOTD"
-#sudo chmod -x "/etc/update-motd.d/*.*"
 sudo chmod +x "$DEST_MOTD/$SCRIPT_NAME"
 
 # === Step 3: Copy configuration file (if exists) ===
