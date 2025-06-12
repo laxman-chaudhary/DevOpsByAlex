@@ -14,7 +14,7 @@ echo "🧹 Starting uninstallation of custom login banner..."
 if [ -f "$BANNER_SCRIPT" ]; then
     echo "❌ Removing MOTD banner script..."
     sudo rm -f "$BANNER_SCRIPT"
-    sudo cp -rf "/etc/update-motd.d_/*" "/etc/update-motd.d/" 
+    sudo mv "/etc/update-motd.d_" "/etc/update-motd.d/" 
 
 else
     echo "✅ Banner script already removed."
