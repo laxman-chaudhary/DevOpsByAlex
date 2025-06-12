@@ -108,7 +108,7 @@ curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash -
 sudo apt-get install -yqq --no-install-recommends nodejs
 
 # === Install Global npm Packages ===
-echo "Installing pm2, yarn, and pnpm globally..."
+echo "🚀 Installing global npm packages (pm2, yarn, pnpm)..."
 sudo npm i -g pm2 yarn pnpm --quiet
 
 
