@@ -8,72 +8,90 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Function to uninstall Docker
+# === Argument Parsing ===
+FORCE_INSTALL=false
+FORCE_UNINSTALL=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --force)
+            FORCE_INSTALL=true
+            ;;
+        --uninstall)
+            FORCE_UNINSTALL=true
+            ;;
+        *)
+            echo "❌ Unknown argument: $arg"
+            echo "Usage: $0 [--force] [--uninstall]"
+            exit 1
+            ;;
+    esac
+done
+
+# === Docker Uninstall Function ===
 uninstall_docker() {
     echo "🗑️ Removing Docker..."
-    sudo apt-get remove -yqq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    sudo rm -rf /var/lib/docker /etc/docker
+    apt-get remove -yqq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    rm -rf /var/lib/docker /etc/docker
     echo "✅ Docker has been completely removed."
     exit 0
 }
 
-# Ask user if they want to install or remove Docker
-while true; do
-    echo "🔧 Docker Installation Menu:"
-    echo "1️⃣  Install Docker"
-    echo "2️⃣  Uninstall Docker"
-    echo "3️⃣  Exit"
+# === Fast Uninstall Mode ===
+if [ "$FORCE_UNINSTALL" = true ]; then
+    uninstall_docker
+fi
 
-    read -p "👉 Enter your choice: " choice
+# === Interactive Menu ===
+if [ "$FORCE_INSTALL" = false ]; then
+    while true; do
+        echo "🔧 Docker Installation Menu:"
+        echo "1️⃣  Install Docker"
+        echo "2️⃣  Uninstall Docker"
+        echo "3️⃣  Exit"
 
-    case $choice in
-        1) break ;;  # Proceed with installation
-        2) uninstall_docker ;;  # Uninstall Docker
-        3) echo "🚫 Exiting..."; exit 1 ;;  # Exit the script
-        *) echo "❌ Invalid input! Please select 1, 2, or 3." ;;
-    esac
-done
+        read -p "👉 Enter your choice: " choice
+        case $choice in
+            1) break ;;
+            2) uninstall_docker ;;
+            3) echo "🚫 Exiting..."; exit 0 ;;
+            *) echo "❌ Invalid input! Please select 1, 2, or 3." ;;
+        esac
+    done
+else
+    echo "✅ Force install mode enabled. Proceeding with Docker installation..."
+fi
 
-# Update system packages
+# === Docker Installation ===
 echo "🔄 Updating system packages..."
-sudo apt-get update -qq
+apt-get update -qq
 
-# Install necessary dependencies
-echo "📦 Installing required packages..."
-sudo apt-get install -yqq --no-install-recommends ca-certificates curl gnupg
+echo "📦 Installing required dependencies..."
+apt-get install -yqq --no-install-recommends ca-certificates curl gnupg
 
-# Set up Docker GPG key
 echo "🔑 Setting up Docker GPG key..."
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
 
-# Add Docker repository
 echo "📦 Adding Docker repository..."
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# Update package list
 echo "🔄 Updating package list (Docker repo added)..."
-sudo apt-get update -qq
+apt-get update -qq
 
-# Install Docker
 echo "🐳 Installing Docker (CE, CLI, Containerd, Buildx, Compose)..."
-sudo apt-get install -yqq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+apt-get install -yqq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Enable and start Docker service
 echo "🔄 Enabling and starting Docker service..."
-sudo systemctl enable --now docker
+systemctl enable --now docker
 
-# Add current user to the Docker group
 echo "👤 Adding current user to the Docker group..."
-sudo usermod -aG docker $USER
+usermod -aG docker $SUDO_USER
 
-# Ask user to log out and log back in
 echo "🔔 Please log out and log back in for Docker group changes to take effect."
 
-# Verify Docker installation
 echo "🚀 Verifying Docker installation..."
 docker run --rm hello-world
 
-# Installation Complete
 echo "🎉 Docker installation complete! Run 'docker -v' to verify."
