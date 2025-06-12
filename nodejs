@@ -109,8 +109,8 @@ sudo apt-get install -yqq --no-install-recommends nodejs
 
 # === Install Global npm Packages ===
 echo "🚀 Installing global npm packages (pm2, yarn, pnpm)..."
-sudo npm i -g pm2 yarn pnpm --quiet
-
+sudo npm i -g yarn pnpm --quiet
+sudo npm i -g pm2 --quiet
 
 # === Final Info ===
 sleep 1
