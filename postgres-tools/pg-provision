@@ -1,0 +1,81 @@
+#!/bin/bash
+
+set -e
+
+CRED_FILE=".pg_credentials"
+
+# ---------- INPUT ----------
+read -p "👤 Enter database user: " DB_USER
+read -p "🗄️  Enter database name: " DB_NAME
+
+# ---------- LOAD EXISTING CREDENTIAL ----------
+if [ -f "$CRED_FILE" ]; then
+    SAVED_PASS=$(grep "^${DB_USER}:" "$CRED_FILE" | cut -d':' -f2)
+fi
+
+# ---------- CHECK USER ----------
+USER_EXISTS=$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'")
+
+if [ "$USER_EXISTS" == "1" ]; then
+    echo "⚠️  User '${DB_USER}' already exists."
+
+    if [ -n "$SAVED_PASS" ]; then
+        DB_PASS="$SAVED_PASS"
+        echo "🔐 Using saved password from ${CRED_FILE}"
+    else
+        echo "❌ No saved credentials found for '${DB_USER}'"
+        echo "👉 Reset password manually:"
+        echo "   ALTER USER ${DB_USER} WITH PASSWORD 'new_password';"
+        echo "👉 Then save it in ${CRED_FILE} like:"
+        echo "   ${DB_USER}:your_password"
+        exit 1
+    fi
+else
+    DB_PASS=$(openssl rand -base64 16)
+    echo "✅ Creating user '${DB_USER}'..."
+    psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
+
+    echo "💾 Saving credentials..."
+    echo "${DB_USER}:${DB_PASS}" >> "$CRED_FILE"
+    chmod 600 "$CRED_FILE"
+fi
+
+# ---------- CHECK DATABASE ----------
+DB_EXISTS=$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")
+
+if [ "$DB_EXISTS" == "1" ]; then
+    echo "⚠️  Database '${DB_NAME}' already exists."
+    echo "👉 Backup:"
+    echo "   pg_dump \"${DB_NAME}\" > ${DB_NAME}.sql"
+    echo "👉 Delete:"
+    echo "   DROP DATABASE \"${DB_NAME}\";"
+    echo "👉 Continuing with privilege assignment..."
+else
+    echo "✅ Creating database '${DB_NAME}'..."
+    psql -c "CREATE DATABASE \"${DB_NAME}\";"
+fi
+
+# ---------- OWNERSHIP + PRIVILEGES ----------
+echo "⚙️  Applying ownership and privileges..."
+
+psql -c "ALTER DATABASE \"${DB_NAME}\" OWNER TO ${DB_USER};"
+
+psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
+psql -d "${DB_NAME}" -c "ALTER SCHEMA public OWNER TO ${DB_USER};"
+
+psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};"
+psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DB_USER};"
+psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO ${DB_USER};"
+
+# ---------- OUTPUT ----------
+echo ""
+echo "===================================="
+echo "🎯 DATABASE SETUP COMPLETE"
+echo "------------------------------------"
+echo "👤 User:     ${DB_USER}"
+echo "🔐 Password: ${DB_PASS}"
+echo "🗄️  Database: ${DB_NAME}"
+echo "------------------------------------"
+echo "🔗 Connection command:"
+echo "PGPASSWORD='${DB_PASS}' psql -h localhost -U ${DB_USER} -d \"${DB_NAME}\""
+echo "===================================="

@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# Define colors for terminal output
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+RED="\033[0;31m"
+BLUE="\033[0;34m"
+CYAN="\033[0;36m"
+BOLD="\033[1m"
+NC="\033[0m" # No Color
+
+# Load environment variables from .env
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+else
+    echo -e "${RED}❌ Error: .env file not found!${NC}"
+    exit 1
+fi
+
+# Ensure necessary environment variables are set
+if [[ -z "$DB_HOST" || -z "$DB_PORT" || -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" ]]; then
+    echo -e "${RED}❌ Error: Missing required database connection variables in .env!${NC}"
+    exit 1
+fi
+
+# List available databases (excluding system databases)
+echo -e "${CYAN}🗂️ Fetching available databases...${NC}"
+IGNORE_LIST=("template0" "template1")
+IGNORE_SQL=$(printf "'%s'," "${IGNORE_LIST[@]}")
+IGNORE_SQL=${IGNORE_SQL%,}  # Remove trailing comma
+
+DATABASES=$(PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -t -c "SELECT datname FROM pg_database WHERE datname NOT IN ($IGNORE_SQL);" | awk '{$1=$1};1')
+
+if [[ -z "$DATABASES" ]]; then
+    echo -e "${RED}❌ No user-created databases found in PostgreSQL.${NC}"
+    exit 1
+fi
+
+# Show list of databases
+echo -e "${CYAN}📂 Available PostgreSQL Databases:${NC}"
+mapfile -t DB_LIST < <(echo "$DATABASES")
+for i in "${!DB_LIST[@]}"; do
+    echo -e "${YELLOW}[${i}]${NC} ${DB_LIST[$i]}"
+done
+
+# Ask user to select a target database
+echo -ne "📌 ${BLUE}Enter the number of the database you want to overwrite:${NC} "
+read -r DB_CHOICE
+
+if ! [[ "$DB_CHOICE" =~ ^[0-9]+$ ]] || [[ "$DB_CHOICE" -lt 0 ]] || [[ "$DB_CHOICE" -ge "${#DB_LIST[@]}" ]]; then
+    echo -e "${RED}❌ Invalid selection. Please run the script again.${NC}"
+    exit 1
+fi
+
+TARGET_DB="${DB_LIST[$DB_CHOICE]}"
+echo -e "✅ ${GREEN}You selected database:${NC} ${BOLD}$TARGET_DB${NC}"
+
+# Ask user if they want to take a backup before dropping the database
+echo -ne "⚠️ ${YELLOW}Would you like to back up '$TARGET_DB' before dropping it? (yes/no):${NC} "
+read -r BACKUP_CONFIRM
+
+if [[ "$BACKUP_CONFIRM" == "yes" ]]; then
+    echo -e "📦 ${BLUE}Running export to back up the database '${TARGET_DB}'...${NC}"
+    ./export
+    if [[ $? -eq 0 ]]; then
+        echo -e "✅ ${GREEN}Backup completed successfully!${NC}"
+    else
+        echo -e "❌ ${RED}Backup failed! Proceeding with import.${NC}"
+    fi
+fi
+
+# Ensure the backup directory exists
+#BACKUP_DIR="./dump"
+if [ ! -d "$BACKUP_DIR" ]; then
+    echo -e "${YELLOW}⚠️ Backup directory ($BACKUP_DIR) does not exist. Creating it now...${NC}"
+    mkdir -p "$BACKUP_DIR"
+    echo -e "✅ ${GREEN}Backup directory created!${NC}"
+fi
+
+# List available backup files
+echo -e "${CYAN}📦 Fetching available backup files...${NC}"
+mapfile -t FILES < <(ls -1 "$BACKUP_DIR"/*.sql 2>/dev/null)
+
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo -e "${RED}❌ No .sql backup files found in $BACKUP_DIR.${NC}"
+    exit 1
+fi
+
+# Show list of backup files
+echo -e "${CYAN}📦 Available Backup Files:${NC}"
+for i in "${!FILES[@]}"; do
+    echo -e "${YELLOW}[${i}]${NC} ${FILES[$i]}"
+done
+
+# Ask user to select a backup file
+echo -ne "📌 ${BLUE}Enter the number of the backup file you want to import:${NC} "
+read -r FILE_INDEX
+
+# Validate user input
+if ! [[ "$FILE_INDEX" =~ ^[0-9]+$ ]] || [[ "$FILE_INDEX" -lt 0 ]] || [[ "$FILE_INDEX" -ge "${#FILES[@]}" ]]; then
+    echo -e "${RED}❌ Invalid selection. Please run the script again.${NC}"
+    exit 1
+fi
+
+SELECTED_FILE="${FILES[$FILE_INDEX]}"
+echo -e "✅ ${GREEN}You selected backup file:${NC} ${BOLD}$SELECTED_FILE${NC}"
+
+# ⚠️ DOUBLE CONFIRMATION BEFORE DROPPING DATABASE
+echo -e "${RED}${BOLD}⚠️ WARNING: This will DROP and RECREATE the database '$TARGET_DB'. All existing data will be lost!${NC}"
+echo -ne "⚠️ ${YELLOW}Are you absolutely sure? Type 'yes' to continue:${NC} "
+read -r FIRST_CONFIRMATION
+if [[ "$FIRST_CONFIRMATION" != "yes" ]]; then
+    echo -e "${RED}🚫 Import cancelled.${NC}"
+    exit 0
+fi
+
+echo -ne "⚠️ ${YELLOW}This is your final warning! Type 'confirm' again to proceed:${NC} "
+read -r SECOND_CONFIRMATION
+if [[ "$SECOND_CONFIRMATION" != "confirm" ]]; then
+    echo -e "${RED}🚫 Import cancelled.${NC}"
+    exit 0
+fi
+
+# 🛑 Drop and recreate the database for a fresh import
+echo -e "🛑 ${RED}Dropping database '$TARGET_DB'...${NC}"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -c "DROP DATABASE IF EXISTS \"$TARGET_DB\";"
+
+echo -e "🆕 ${GREEN}Recreating fresh database: $TARGET_DB${NC}"
+PGPASSWORD=$POSTGRES_PASSWORD createdb -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER "$TARGET_DB"
+
+if [[ $? -ne 0 ]]; then
+    echo -e "${RED}❌ Failed to create database '$TARGET_DB'.${NC}"
+    exit 1
+fi
+
+# 📥 Import the backup
+echo -e "📥 ${BLUE}Importing backup '$SELECTED_FILE' into database '$TARGET_DB'...${NC}"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "$TARGET_DB" -f "$SELECTED_FILE"
+
+if [[ $? -eq 0 ]]; then
+    echo -e "✅ ${GREEN}Database import completed successfully! 🎉${NC}"
+else
+    echo -e "❌ ${RED}Database import failed!${NC} 🚨"
+fi
+

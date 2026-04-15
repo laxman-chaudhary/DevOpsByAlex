@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Load SMTP settings from .env
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+else
+    echo "❌ Error: .env file not found!"
+    exit 1
+fi
+
+# Ensure SMTP settings are available
+if [[ -z "$TO_ADDRESSES" || -z "$SUBJECT_TEMPLATE" || -z "$SMTP_SERVER" || -z "$SMTP_PORT" || -z "$EMAIL_USER" || -z "$EMAIL_PASSWORD" || -z "$REPORT_FILE" ]]; then
+    echo "❌ Error: SMTP details are missing in .env"
+    exit 1
+fi
+
+# Define optional CC and BCC addresses (they can be empty)
+CC_ADDRESSES="${CC_ADDRESSES:-}"
+BCC_ADDRESSES="${BCC_ADDRESSES:-}"
+
+# Define email subject with correct formatting
+EMAIL_DATE=$(date +"%Y-%b-%d")  # e.g., 2025-Feb-05
+EMAIL_SUBJECT="$SUBJECT_TEMPLATE - $EMAIL_DATE"
+
+# Check if the backup report exists
+if [ ! -f "$REPORT_FILE" ]; then
+    echo "❌ Error: Backup report file not found!"
+    exit 1
+fi
+
+echo "📩 Sending backup report to: $TO_ADDRESSES..."
+[[ -n "$CC_ADDRESSES" ]] && echo "📤 CC: $CC_ADDRESSES"
+[[ -n "$BCC_ADDRESSES" ]] && echo "📤 BCC: $BCC_ADDRESSES"
+
+# Send email using `msmtp`
+(
+echo "From: $EMAIL_USER"
+echo "To: $TO_ADDRESSES"
+[[ -n "$CC_ADDRESSES" ]] && echo "Cc: $CC_ADDRESSES"
+[[ -n "$BCC_ADDRESSES" ]] && echo "Bcc: $BCC_ADDRESSES"
+echo "Subject: $EMAIL_SUBJECT"
+echo "MIME-Version: 1.0"
+echo "Content-Type: text/html; charset=UTF-8"
+echo ""  # Empty line required before the body
+cat "$REPORT_FILE"
+) | msmtp --host="$SMTP_SERVER" --port="$SMTP_PORT" --auth=plain --user="$EMAIL_USER" --passwordeval="echo $EMAIL_PASSWORD" --from="$EMAIL_USER" --tls=off "$TO_ADDRESSES"
+
+if [[ $? -eq 0 ]]; then
+    echo "✅ Email sent successfully to $TO_ADDRESSES!"
+    [[ -n "$CC_ADDRESSES" ]] && echo "📤 CC sent to: $CC_ADDRESSES"
+    [[ -n "$BCC_ADDRESSES" ]] && echo "📤 BCC sent to: (hidden)"
+else
+    echo "❌ Failed to send email."
+fi
+

@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Load environment variables from .env file
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+else
+    echo "❌ Error: .env file not found!"
+    exit 1
+fi
+
+# Ensure necessary environment variables are set
+if [[ -z "$DB_HOST" ]]; then
+    DB_HOST="localhost"  # Default to localhost if not set
+fi
+
+if [[ -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" ]]; then
+    echo "❌ Error: Database credentials (POSTGRES_USER, POSTGRES_PASSWORD) are missing in .env"
+    exit 1
+fi
+
+# Define databases to ignore
+IGNORE_LIST=("template0" "template1")
+
+# Convert the array to a SQL-friendly list
+IGNORE_SQL=$(printf "'%s'," "${IGNORE_LIST[@]}")
+IGNORE_SQL=${IGNORE_SQL%,}  # Remove trailing comma
+
+# Print a blank line before output for readability
+echo ""
+
+# Fetch database sizes in bytes and convert to human-readable format
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -t -A -F '|' -c "
+SELECT datname, pg_database_size(datname)
+FROM pg_database
+WHERE datname NOT IN ($IGNORE_SQL);
+" | awk -F '|' '
+BEGIN {
+    print "🗂️  Database List"
+    print "-------------------------------------------"
+}
+{
+    dbname = $1
+    size_bytes = $2
+
+    if (size_bytes <= 1024) {
+        size = size_bytes " B"
+    } else if (size_bytes <= 1048576) {  # 1024 KB
+        size = sprintf("%.2f KB", size_bytes / 1024)
+    } else if (size_bytes <= 1073741824) {  # 1024 MB
+        size = sprintf("%.2f MB", size_bytes / 1048576)
+    } else {  # GB+
+        size = sprintf("%.2f GB", size_bytes / 1073741824)
+    }
+
+    printf "📌 %-15s | 📦 %s\n", dbname, size
+}
+END {
+    print "-------------------------------------------"
+}'
