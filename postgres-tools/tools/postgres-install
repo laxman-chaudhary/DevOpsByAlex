@@ -69,7 +69,26 @@ for version in "${VERSION_ARRAY[@]}"; do
     fi
 done
 
-echo -e "${GREEN}Installing PostgreSQL version(s): $VERSIONS${NC}"
+# Package Type Selection
+echo ""
+echo -e "${YELLOW}=== PostgreSQL Package Selection ===${NC}"
+echo "1) Client only (psql, utilities)"
+echo "2) Server only (PostgreSQL server)"
+echo "3) Both (client + server)"
+echo ""
+read -p "Select package type [1-3]: " package_choice
+
+case "$package_choice" in
+    1) INSTALL_CLIENT=true; INSTALL_SERVER=false; PACKAGE_TYPE="Client" ;;
+    2) INSTALL_CLIENT=false; INSTALL_SERVER=true; PACKAGE_TYPE="Server" ;;
+    3) INSTALL_CLIENT=true; INSTALL_SERVER=true; PACKAGE_TYPE="Client + Server" ;;
+    *)
+        echo -e "${RED}Invalid selection${NC}"
+        exit 1
+        ;;
+esac
+
+echo -e "${GREEN}Installing PostgreSQL $PACKAGE_TYPE version(s): $VERSIONS${NC}"
 
 # Update package list and install prerequisites
 echo -e "${YELLOW}[1/3] Installing prerequisites...${NC}"
@@ -86,12 +105,30 @@ sudo apt update
 echo -e "${YELLOW}[3/3] Installing PostgreSQL...${NC}"
 for version in "${VERSION_ARRAY[@]}"; do
     version=$(echo "$version" | xargs) # Trim whitespace
-    echo "Installing PostgreSQL $version..."
-    sudo apt install -y "postgresql-client-$version" "postgresql-$version"
+    echo "Installing PostgreSQL $version ($PACKAGE_TYPE)..."
+    
+    PACKAGES=""
+    [ "$INSTALL_CLIENT" = true ] && PACKAGES="$PACKAGES postgresql-client-$version"
+    [ "$INSTALL_SERVER" = true ] && PACKAGES="$PACKAGES postgresql-$version"
+    
+    if [ -n "$PACKAGES" ]; then
+        sudo apt install -y $PACKAGES
+    fi
 done
 
 echo -e "${GREEN}✓ PostgreSQL installation completed successfully!${NC}"
 echo ""
-echo "Installed versions:"
-sudo -u postgres psql --version 2>/dev/null || echo "  (Check with: psql --version)"
+echo "Installation Summary:"
+echo "  Versions: $VERSIONS"
+echo "  Packages: $PACKAGE_TYPE"
+echo ""
+echo "Verification:"
+
+if [ "$INSTALL_CLIENT" = true ]; then
+    echo "  Client version: $(psql --version 2>/dev/null || echo 'Check with: psql --version')"
+fi
+
+if [ "$INSTALL_SERVER" = true ]; then
+    echo "  Server status: $(sudo systemctl is-active postgresql 2>/dev/null || echo 'Check with: sudo systemctl status postgresql')"
+fi
 
