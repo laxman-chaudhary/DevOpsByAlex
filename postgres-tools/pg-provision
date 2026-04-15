@@ -2,7 +2,26 @@
 
 set -e
 
-CRED_FILE=".pg_credentials"
+# Get script directory and load .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/tools/.env"
+
+# Load environment variables
+if [ -f "$ENV_FILE" ]; then
+    export $(grep -v '^#' "$ENV_FILE" | xargs)
+else
+    echo "❌ Error: .env file not found at $ENV_FILE"
+    exit 1
+fi
+
+# Validate required database connection variables
+if [[ -z "$DB_HOST" || -z "$DB_PORT" || -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" ]]; then
+    echo "❌ Error: Missing required database connection variables in .env"
+    echo "Required: DB_HOST, DB_PORT, POSTGRES_USER, POSTGRES_PASSWORD"
+    exit 1
+fi
+
+CRED_FILE="$SCRIPT_DIR/.pg_credentials"
 
 # ---------- INPUT ----------
 read -p "👤 Enter database user: " DB_USER
@@ -14,7 +33,7 @@ if [ -f "$CRED_FILE" ]; then
 fi
 
 # ---------- CHECK USER ----------
-USER_EXISTS=$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'")
+USER_EXISTS=$(PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>/dev/null || echo "")
 
 if [ "$USER_EXISTS" == "1" ]; then
     echo "⚠️  User '${DB_USER}' already exists."
@@ -33,7 +52,7 @@ if [ "$USER_EXISTS" == "1" ]; then
 else
     DB_PASS=$(openssl rand -base64 16)
     echo "✅ Creating user '${DB_USER}'..."
-    psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
+    PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';"
 
     echo "💾 Saving credentials..."
     echo "${DB_USER}:${DB_PASS}" >> "$CRED_FILE"
@@ -41,7 +60,7 @@ else
 fi
 
 # ---------- CHECK DATABASE ----------
-DB_EXISTS=$(psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'")
+DB_EXISTS=$(PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null || echo "")
 
 if [ "$DB_EXISTS" == "1" ]; then
     echo "⚠️  Database '${DB_NAME}' already exists."
@@ -52,20 +71,20 @@ if [ "$DB_EXISTS" == "1" ]; then
     echo "👉 Continuing with privilege assignment..."
 else
     echo "✅ Creating database '${DB_NAME}'..."
-    psql -c "CREATE DATABASE \"${DB_NAME}\";"
+    PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -c "CREATE DATABASE \"${DB_NAME}\";"
 fi
 
 # ---------- OWNERSHIP + PRIVILEGES ----------
 echo "⚙️  Applying ownership and privileges..."
 
-psql -c "ALTER DATABASE \"${DB_NAME}\" OWNER TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d postgres -c "ALTER DATABASE \"${DB_NAME}\" OWNER TO ${DB_USER};"
 
-psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
-psql -d "${DB_NAME}" -c "ALTER SCHEMA public OWNER TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "${DB_NAME}" -c "ALTER SCHEMA public OWNER TO ${DB_USER};"
 
-psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};"
-psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DB_USER};"
-psql -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DB_USER};"
+PGPASSWORD=$POSTGRES_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $POSTGRES_USER -d "${DB_NAME}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO ${DB_USER};"
 
 # ---------- OUTPUT ----------
 echo ""
@@ -77,5 +96,5 @@ echo "🔐 Password: ${DB_PASS}"
 echo "🗄️  Database: ${DB_NAME}"
 echo "------------------------------------"
 echo "🔗 Connection command:"
-echo "PGPASSWORD='${DB_PASS}' psql -h localhost -U ${DB_USER} -d \"${DB_NAME}\""
+echo "PGPASSWORD='${DB_PASS}' psql -h $DB_HOST -p $DB_PORT -U ${DB_USER} -d \"${DB_NAME}\""
 echo "===================================="
