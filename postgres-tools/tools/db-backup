@@ -9,11 +9,15 @@ CYAN="\033[0;36m"
 BOLD="\033[1m"
 NC="\033[0m" # No Color
 
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+
 # Load environment variables
-if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+if [ -f "$ENV_FILE" ]; then
+    export $(grep -v '^#' "$ENV_FILE" | xargs)
 else
-    echo "❌ Error: .env file not found!"
+    echo "❌ Error: .env file not found at $ENV_FILE"
     exit 1
 fi
 
