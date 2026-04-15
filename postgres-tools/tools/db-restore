@@ -9,9 +9,9 @@ CYAN="\033[0;36m"
 BOLD="\033[1m"
 NC="\033[0m" # No Color
 
-# Get script directory
+# Get parent directory (postgres-tools) where .env is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
+ENV_FILE="$(dirname "$SCRIPT_DIR")/.env"
 
 # Load environment variables from .env
 if [ -f "$ENV_FILE" ]; then

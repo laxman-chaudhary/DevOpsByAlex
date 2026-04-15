@@ -2,9 +2,9 @@
 
 set -e
 
-# Get script directory and load .env
+# Get parent directory (postgres-tools) where .env is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/tools/.env"
+ENV_FILE="$(dirname "$SCRIPT_DIR")/.env"
 
 # Load environment variables
 if [ -f "$ENV_FILE" ]; then

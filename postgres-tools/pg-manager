@@ -90,14 +90,14 @@ while true; do
             # Install PostgreSQL
             read -p "Enter PostgreSQL version(s) [16,17,18 or press Enter for interactive]: " versions
             if [ -z "$versions" ]; then
-                run_script "$SCRIPT_DIR/postgres-install"
+                run_script "$TOOLS_DIR/postgres-install"
             else
-                run_script "$SCRIPT_DIR/postgres-install" "$versions"
+                run_script "$TOOLS_DIR/postgres-install" "$versions"
             fi
             ;;
         2)
             # Create Database & User
-            run_script "$SCRIPT_DIR/pg-provision"
+            run_script "$TOOLS_DIR/pg-provision"
             ;;
         3)
             # List Databases
