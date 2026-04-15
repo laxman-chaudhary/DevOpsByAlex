@@ -82,8 +82,41 @@ if [[ -z "$DATABASES" ]]; then
     exit 1
 fi
 
-# Backup each database
-for DB in $DATABASES; do
+# Show list of databases and ask for selection
+mapfile -t DB_LIST < <(echo "$DATABASES")
+echo -e "${CYAN}📂 Available PostgreSQL Databases:${NC}"
+for i in "${!DB_LIST[@]}"; do
+    echo -e "  ${GREEN}[${i}]${NC} ${DB_LIST[$i]}"
+done
+echo -e "  ${GREEN}[${#DB_LIST[@]}]${NC} Backup ALL databases"
+echo ""
+
+# Ask user to select database(s) to backup
+echo -ne "${BLUE}📌 Select database to backup [0-${#DB_LIST[@]}] or press Enter for all: ${NC}"
+read -r DB_CHOICE
+
+# Handle user input
+if [[ -z "$DB_CHOICE" ]]; then
+    # If empty, backup all
+    SELECTED_DBS=("${DB_LIST[@]}")
+    DB_CHOICE_TEXT="all databases"
+elif [[ "$DB_CHOICE" == "${#DB_LIST[@]}" ]]; then
+    # If user selects "all"
+    SELECTED_DBS=("${DB_LIST[@]}")
+    DB_CHOICE_TEXT="all databases"
+elif [[ "$DB_CHOICE" =~ ^[0-9]+$ ]] && [[ "$DB_CHOICE" -ge 0 ]] && [[ "$DB_CHOICE" -lt "${#DB_LIST[@]}" ]]; then
+    # If user selects a specific database
+    SELECTED_DBS=("${DB_LIST[$DB_CHOICE]}")
+    DB_CHOICE_TEXT="${DB_LIST[$DB_CHOICE]}"
+else
+    echo -e "${RED}❌ Invalid selection!${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Selected: $DB_CHOICE_TEXT${NC}\n"
+
+# Backup selected database(s)
+for DB in "${SELECTED_DBS[@]}"; do
     DB_START_TIME=$(date +%s)
     FILE_NAME="${DB}_backup_${DATESTAMP}_$(date +"%I-%M-%p").sql"
     BACKUP_FILE="${BACKUP_DIR}/${FILE_NAME}"
