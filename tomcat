@@ -10,33 +10,10 @@ TOMCAT_MAJOR="11"
 TOMCAT_MIRROR_BASE="https://dlcdn.apache.org/tomcat/tomcat-${TOMCAT_MAJOR}"
 TOMCAT_ARCHIVE_BASE="https://archive.apache.org/dist/tomcat/tomcat-${TOMCAT_MAJOR}"
 TOMCAT_URL="${TOMCAT_URL:-}"
-LOG_FILE=""
-
-init_logging() {
-    local preferred_log="/var/log/tomcat-manager.log"
-    local fallback_log="${TMPDIR:-/tmp}/tomcat-manager.log"
-
-    if touch "$preferred_log" 2>/dev/null; then
-        LOG_FILE="$preferred_log"
-    else
-        LOG_FILE="$fallback_log"
-        touch "$LOG_FILE"
-    fi
-
-    exec > >(tee -a "$LOG_FILE") 2>&1
-    echo "🧾 Logging to: $LOG_FILE"
-
-    if [ "${DEBUG:-0}" = "1" ]; then
-        export PS4='+ [${BASH_SOURCE##*/}:${LINENO}] '
-        set -x
-        echo "🐞 DEBUG mode enabled (command trace is on)"
-    fi
-}
 
 trap 'echo "❌ Error on line $LINENO while running: $BASH_COMMAND (exit code: $?)" >&2' ERR
 
 run_step() {
-    echo "➡️ $*"
     "$@"
 }
 
@@ -167,7 +144,6 @@ EOF_SERVICE
     if ! as_root systemctl is-active --quiet tomcat; then
         echo "❌ Tomcat failed to start. Showing recent service logs:"
         as_root systemctl --no-pager -l status tomcat || true
-        echo "📌 Full script log: $LOG_FILE"
         exit 1
     fi
 
@@ -235,8 +211,6 @@ echo "2) Uninstall Tomcat"
 echo "3) Block public access (127.0.0.1)"
 echo "4) Clean webapps (/webapps/*)"
 echo "=============================="
-
-init_logging
 
 read -p "Select option [1-4]: " choice
 
