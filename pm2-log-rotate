@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Install PM2 logrotate module (one-time setup)
+pm2 install pm2-logrotate
+
+# Rotate log when it reaches 100MB
+# Suggested: 50M–200M depending on log volume and disk size
+pm2 set pm2-logrotate:max_size 100M
+
+# Keep last 14 rotated logs per app
+# Suggested: 7–30 (increase if audit/history needed)
+pm2 set pm2-logrotate:retain 3
+
+# Compress rotated logs to save disk space (.gz)
+# Always keep enabled in production
+pm2 set pm2-logrotate:compress true
+
+# Rotate logs daily at midnight (cron format)
+# Suggested: adjust if high traffic (e.g., every 6h → '0 */6 * * *')
+pm2 set pm2-logrotate:rotateInterval '0 0 * * *'
+
+# Check rotation conditions every 30 seconds
+# Suggested: lower (10–30s) for high log throughput
+pm2 set pm2-logrotate:workerInterval 30
+
+# Optional: verify applied configuration
+pm2 conf pm2-logrotate
+
+# Optional: force rotation for testing
+# pm2 trigger pm2-logrotate:rotate
