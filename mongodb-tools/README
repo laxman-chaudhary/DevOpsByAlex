@@ -1,0 +1,480 @@
+# 🍃 mongo-tool
+
+List, back up, and restore any MongoDB — containerised, host-installed, or remote.
+
+The script talks to MongoDB over TCP using ordinary connection details (host, port,
+user, password). It does **not** shell into Docker, so the same copy works against a
+container, a locally installed `mongod`, or a database on another server.
+
+---
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [Options](#options)
+- [Cron / automation](#cron--automation)
+- [Restoring](#restoring)
+- [Retention](#retention)
+- [How it stays safe](#how-it-stays-safe)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Requirements
+
+| Tool | Needed for | Install |
+|---|---|---|
+| `mongodump` / `mongorestore` | backup, restore | `sudo apt install mongodb-database-tools` |
+| `mongosh` | listing databases and users, interactive pickers | `sudo apt install mongodb-mongosh` |
+| `bash` 4+ | everything | preinstalled on Ubuntu |
+
+Backup and restore work without `mongosh`, but the database picker and the
+`databases` / `users` commands need it.
+
+<details>
+<summary>Adding MongoDB's apt repository (Ubuntu 24.04)</summary>
+
+```bash
+sudo apt install -y gnupg curl ca-certificates
+
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+  sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | \
+  sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+sudo apt update
+sudo apt install -y mongodb-database-tools mongodb-mongosh
+```
+
+Install **only** these two packages. The `mongodb-org` metapackage would also
+install a second `mongod` that fights for port 27017.
+
+</details>
+
+---
+
+## Installation
+
+System-wide, so one copy serves every project:
+
+```bash
+sudo install -m 755 mongo-tool.sh /usr/local/bin/mongo-tool
+```
+
+Or keep it alongside a single project:
+
+```bash
+cp mongo-tool.sh /opt/mongodb/
+chmod +x /opt/mongodb/mongo-tool.sh
+```
+
+---
+
+## Configuration
+
+Create a `.env` next to your project. Only the password is required — everything
+else falls back to sensible defaults.
+
+```bash
+MONGO_ROOT_PASSWORD="your-password-here"
+MONGO_HOST=127.0.0.1
+MONGO_PORT=27017
+MONGO_USER=admin
+MONGO_AUTH_DB=admin
+BACKUP_DIR=./backup
+RETENTION_DAYS=14
+```
+
+Lock it down:
+
+```bash
+chmod 600 .env
+```
+
+### Recognised keys
+
+| Key | Default | Notes |
+|---|---|---|
+| `MONGO_PASSWORD` | — | **Required.** `MONGO_ROOT_PASSWORD` and `MONGO_INITDB_ROOT_PASSWORD` also accepted |
+| `MONGO_HOST` | `127.0.0.1` | Any reachable host |
+| `MONGO_PORT` | `27017` | |
+| `MONGO_USER` | `admin` | |
+| `MONGO_AUTH_DB` | `admin` | Where the user record lives, not the database you're dumping |
+| `BACKUP_DIR` | directory holding the `.env` | Relative paths anchor to the `.env`, not your shell's location |
+| `RETENTION_DAYS` | `14` | |
+
+### Where `.env` is found
+
+Searched in order, first match wins:
+
+1. `--env /path/to/.env`
+2. `$ENV_FILE`
+3. `./.env` — your current directory
+4. the directory containing the script
+
+This is what lets one installed copy serve many projects: `cd` into the project
+and run it.
+
+### Precedence
+
+Highest wins:
+
+```
+CLI flag  →  exported env var  →  .env  →  built-in default
+```
+
+Check what actually resolved, and where each value came from:
+
+```bash
+mongo-tool config
+```
+
+```
+Resolved configuration
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  env file        /opt/mongodb/.env
+  host            127.0.0.1                  .env
+  port            27017                      .env
+  user            admin                      .env
+  authdb          admin                      .env
+  backup dir      /opt/mongodb/backup        .env
+  retention       14 days                    .env
+  password        •••••• (8 chars)           .env (MONGO_ROOT_PASSWORD)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🔧 mongodump  100.18.0
+  🔧 mongosh    2.10.0
+```
+
+Run this first whenever something misbehaves.
+
+---
+
+## Quick start
+
+```bash
+cd /opt/mongodb        # wherever your .env lives
+
+mongo-tool config      # verify settings and tool availability
+mongo-tool databases   # confirm you can connect
+mongo-tool backup      # pick a database, or Enter for all
+```
+
+---
+
+## Commands
+
+### Interactive menu
+
+Run with no arguments:
+
+```bash
+mongo-tool
+```
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🍃 mongo-tool  admin@127.0.0.1:27017
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🗄️  INSPECT
+   1) List databases
+   2) List users
+💾 BACKUP & RESTORE
+   3) Backup database
+   4) Restore database
+⚙️  SETTINGS
+   5) Show configuration
+   0) Exit
+```
+
+A failed action reports the error and returns you to the menu rather than exiting.
+
+### `databases`
+
+```bash
+mongo-tool databases
+```
+
+```
+📂 Databases on 127.0.0.1:27017
+   admin                        0.10 MB
+   config                       0.07 MB
+   local                        0.08 MB
+   share_chautari              21.61 MB
+```
+
+### `users`
+
+```bash
+mongo-tool users
+```
+
+```
+👥 Users  (name@db → roles)
+   admin@admin                       root:admin
+   appuser@admin                     readWrite:share_chautari
+```
+
+### `backup`
+
+```bash
+mongo-tool backup                      # interactive picker
+mongo-tool backup --all                # entire instance
+mongo-tool backup --db share_chautari  # one database
+```
+
+Archives are named:
+
+```
+mongo-<label>-YYYY-MM-DD-HHMMSS.archive.gz
+```
+
+`--all` produces `mongo-ALL-…` and includes `admin`, so your **user accounts and
+roles are captured too**. Take one of these before any rebuild.
+
+### `restore`
+
+See [Restoring](#restoring) below.
+
+### `config`
+
+Prints resolved settings and installed tool versions. Never connects to the
+database, so it's safe to run anywhere.
+
+---
+
+## Options
+
+| Option | Effect |
+|---|---|
+| `--all` | Back up every database |
+| `--db NAME` | Back up a single database |
+| `--env FILE` | Use a specific `.env` |
+| `--host H` | Override host |
+| `--port N` | Override port |
+| `--user U` | Override username |
+| `--out DIR` | Override output directory |
+| `--quiet`, `-q` | Suppress normal output; still reports failures |
+| `--force` | Skip the restore confirmation prompt |
+| `--drop` | Restore drops collections first (replace instead of merge) |
+| `--help`, `-h` | Usage summary |
+
+---
+
+## Cron / automation
+
+The silent one-liner:
+
+```cron
+0 */6 * * * cd /opt/mongodb && /usr/local/bin/mongo-tool backup --all --quiet
+```
+
+Every six hours. `--quiet` prints nothing on success, so cron only emails you when
+something fails.
+
+The `cd` matters — it determines which `.env` is picked up and where archives land.
+
+Other schedules:
+
+```cron
+# Every 4 hours
+0 */4 * * * cd /opt/mongodb && /usr/local/bin/mongo-tool backup --all --quiet
+
+# Daily at 02:30
+30 2 * * * cd /opt/mongodb && /usr/local/bin/mongo-tool backup --all --quiet
+
+# One database only
+30 2 * * * cd /opt/mongodb && /usr/local/bin/mongo-tool backup --db share_chautari --quiet
+```
+
+To keep a log instead of mail:
+
+```cron
+0 */6 * * * cd /opt/mongodb && /usr/local/bin/mongo-tool backup --all >> /var/log/mongo-backup.log 2>&1
+```
+
+When stdin isn't a terminal, the script skips all prompts and backs up everything —
+so a bare `mongo-tool` in cron does the right thing even without `--all`.
+
+### 🔺 Copy backups off the host
+
+A backup on the same disk as the database survives an accidental drop, but not a
+disk failure. Add this after the backup:
+
+```cron
+15 */6 * * * rsync -az /opt/mongodb/backup/ user@backup-host:/backups/mongo/
+```
+
+---
+
+## Restoring
+
+Interactive — lists available archives newest first:
+
+```bash
+mongo-tool restore
+```
+
+```
+🗂️  Available backups (newest first)
+  [0] mongo-ALL-2026-08-16-1030.archive.gz          4.2M
+  [1] mongo-ALL-2026-08-15-0430.archive.gz          4.1M
+
+📌 Select backup to restore [0-1]:
+```
+
+Direct:
+
+```bash
+mongo-tool restore backup/mongo-ALL-2026-08-16-1030.archive.gz
+```
+
+### Merge vs replace
+
+| Mode | Behaviour |
+|---|---|
+| default | **Merge** — existing documents are kept, archive contents added |
+| `--drop` | **Replace** — each collection is emptied before reload |
+
+Use `--drop` when recovering from corruption or rolling back. Use the default when
+re-adding data to a live database.
+
+```bash
+mongo-tool restore backup/mongo-ALL-2026-08-16-1030.archive.gz --drop
+```
+
+You must type `yes` to confirm. `--force` skips that prompt — needed for scripted
+restores, and worth thinking twice about.
+
+Without `--force`, a non-interactive restore is **refused outright**, so a stray cron
+entry cannot silently overwrite production.
+
+### Verify an archive without writing anything
+
+```bash
+mongorestore --host 127.0.0.1 --port 27017 \
+  -u admin -p 'PASSWORD' --authenticationDatabase admin \
+  --archive=backup/mongo-ALL-2026-08-16-1030.archive.gz --gzip --dry-run
+```
+
+Lists collections and document counts. An untested backup isn't a backup.
+
+---
+
+## Retention
+
+After each successful backup, archives older than `RETENTION_DAYS` are deleted.
+
+Cleanup only ever touches files matching `mongo-*.archive.gz` in the top level of
+`BACKUP_DIR` — nothing else in that directory is at risk, which matters because
+archives often sit beside `docker-compose.yml` and `.env`.
+
+```bash
+RETENTION_DAYS=30 mongo-tool backup --all    # one-off override
+```
+
+---
+
+## How it stays safe
+
+**The password never appears in `ps`.** `mongodump` has no `--password-file`, and
+`-p secret` is visible to every user on the machine for the duration of the dump.
+The script writes a `0600` temporary file and passes `--config`, removing it on exit
+via a trap.
+
+**`.env` is parsed, not sourced.** `source .env` executes the file — a stray
+backtick would run as a command. The script extracts values with `grep`, handling
+quotes, spaces, and `export` prefixes.
+
+**Truncated archives are treated as failures.** A dump that dies early still leaves
+a header-only file. Anything under 1 KB is deleted and reported as failed, so a
+broken backup can't sit there looking successful.
+
+**Relative paths anchor to the `.env`.** `BACKUP_DIR=./backup` always means the
+project's backup directory, never wherever cron happened to start.
+
+**Restore is guarded.** Confirmation required, merge by default, and refused
+non-interactively without `--force`.
+
+---
+
+## Troubleshooting
+
+Start here every time:
+
+```bash
+mongo-tool config
+```
+
+### `mongodump not found`
+
+```bash
+sudo apt install mongodb-database-tools
+```
+
+### `This action needs mongosh`
+
+Listing and the pickers need it; backup and restore don't.
+
+```bash
+sudo apt install mongodb-mongosh
+```
+
+### `No password found`
+
+`mongo-tool config` shows which `.env` was located, if any. Either you're in the
+wrong directory, or the file uses a key name that isn't recognised. Use
+`--env /full/path/.env` to be explicit.
+
+### `mongosh could not connect`
+
+The real error from `mongosh` is printed beneath this line. Common causes:
+
+- Wrong port — check against `sudo ss -tlnp | grep 27017`
+- Wrong `MONGO_AUTH_DB`; it's usually `admin` even when dumping another database
+- Container not running — `docker ps`
+
+### `Archive only N bytes — treating as failed`
+
+The dump failed after writing headers. Authentication is the usual cause. Run
+`mongo-tool databases` to test the connection on its own.
+
+### Backups land in an unexpected directory
+
+`mongo-tool config` prints the resolved absolute `backup dir`. Relative values
+resolve against the `.env` location, so this is nearly always a case of a different
+`.env` being found than you expected.
+
+### A failed run with no explanation
+
+Every failure prints a call stack:
+
+```
+❌ Failed (exit 1) 💥
+❌    ↳ cmd_backup() at line 218
+❌    ↳ main() at line 475
+```
+
+Read top to bottom — the first line is where it actually broke.
+
+---
+
+## Reference
+
+```
+mongo-tool                          interactive menu
+mongo-tool backup                   pick a database
+mongo-tool backup --all             every database
+mongo-tool backup --db NAME         one database
+mongo-tool backup --all --quiet     silent, for cron
+mongo-tool restore                  pick an archive
+mongo-tool restore FILE --drop      replace collections
+mongo-tool databases                list databases with sizes
+mongo-tool users                    list users with roles
+mongo-tool config                   show resolved settings
+mongo-tool --help                   usage
+```

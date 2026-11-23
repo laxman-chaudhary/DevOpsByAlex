@@ -1,0 +1,168 @@
+#!/bin/bash
+set -euo pipefail
+
+# ==========================================
+# MONARX AUTO UPDATE - UBUNTU
+# ==========================================
+
+SCRIPT="/usr/local/sbin/monarx-update.sh"
+CRON_ENTRY="0 3 * * 6 $SCRIPT"
+
+# Require root privileges
+if [ "$EUID" -ne 0 ]; then
+    echo "ERROR: Please run with sudo."
+    exit 1
+fi
+
+echo "Creating Monarx update script..."
+
+cat > "$SCRIPT" <<'UPDATE'
+#!/bin/bash
+set -euo pipefail
+
+# Prevent interactive prompts
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=l
+export APT_LISTCHANGES_FRONTEND=none
+
+LOG="/var/log/monarx-update.log"
+
+# Log to file and display output when run manually
+if [ -t 1 ]; then
+    exec > >(tee -a "$LOG") 2>&1
+else
+    exec >> "$LOG" 2>&1
+fi
+
+echo "=========================================="
+echo "Monarx update started: $(date -Is)"
+echo "=========================================="
+
+# Prevent overlapping executions
+exec 9>/run/monarx-update.lock
+
+if ! flock -n 9; then
+    echo "Another Monarx update is running. Exiting."
+    exit 0
+fi
+
+# Log failures
+trap 'echo "ERROR: Monarx update failed at line $LINENO (exit code $?)."' ERR
+
+echo ""
+echo "[1/7] Current Monarx versions:"
+dpkg-query -W -f='${Package} ${Version}\n' \
+    monarx-protect \
+    monarx-protect-autodetect \
+    monarx-agent
+
+echo ""
+echo "[2/7] Updating APT repositories..."
+apt-get update
+
+echo ""
+echo "[3/7] Upgrading monarx-protect..."
+apt-get install --only-upgrade -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    monarx-protect
+
+echo ""
+echo "[4/7] Upgrading monarx-protect-autodetect..."
+apt-get install --only-upgrade -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    monarx-protect-autodetect
+
+echo ""
+echo "[5/7] Upgrading monarx-agent..."
+apt-get install --only-upgrade -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    monarx-agent
+
+echo ""
+echo "[6/7] Restarting Monarx agent..."
+systemctl restart monarx-agent
+
+if systemctl is-active --quiet monarx-agent; then
+    echo "Monarx agent status: ACTIVE"
+else
+    echo "ERROR: Monarx agent is not running!"
+    exit 1
+fi
+
+echo ""
+echo "[7/7] Updated Monarx versions:"
+dpkg-query -W -f='${Package} ${Version}\n' \
+    monarx-protect \
+    monarx-protect-autodetect \
+    monarx-agent
+
+# Check reboot requirement without rebooting
+echo ""
+if [ -f /var/run/reboot-required ]; then
+    echo "WARNING: System reboot required."
+    echo "Schedule a reboot during maintenance."
+else
+    echo "No system reboot currently required."
+fi
+
+echo ""
+echo "Web server restart: SKIPPED"
+echo "Automatic system reboot: DISABLED"
+echo "Monarx update completed: $(date -Is)"
+echo "=========================================="
+UPDATE
+
+# ==========================================
+# SET PERMISSIONS
+# ==========================================
+
+chown root:root "$SCRIPT"
+chmod 750 "$SCRIPT"
+
+echo "Script created: $SCRIPT"
+
+# ==========================================
+# CONFIGURE ROOT CRONJOB
+# ==========================================
+
+echo "Configuring root cronjob..."
+
+# Remove older entries for this script to prevent duplicates
+(
+    crontab -l 2>/dev/null | grep -v -F "$SCRIPT" || true
+    echo "$CRON_ENTRY"
+) | crontab -
+
+# Enable cron
+systemctl enable --now cron
+
+echo ""
+echo "=========================================="
+echo "MONARX AUTO UPDATE SETUP COMPLETED"
+echo "=========================================="
+echo "Execution user : root"
+echo "Schedule       : Every Saturday at 03:00"
+echo "Update script  : $SCRIPT"
+echo "Log file       : /var/log/monarx-update.log"
+echo "Web server     : No explicit restart"
+echo "System reboot  : Disabled"
+echo "=========================================="
+
+echo ""
+echo "Root cronjob:"
+crontab -l | grep -F "$SCRIPT"
+
+# ==========================================
+# RUN INITIAL UPDATE
+# ==========================================
+
+echo ""
+echo "Executing initial Monarx update..."
+
+"$SCRIPT"
+
+echo ""
+echo "Initial Monarx update completed successfully."
