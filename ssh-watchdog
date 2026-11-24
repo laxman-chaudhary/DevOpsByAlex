@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# ======================================================================
+# SSH Watchdog - automatic local SSH recovery and server reboot
+# Platform: Ubuntu with systemd and OpenSSH server.
+# Usage: sudo bash install-ssh-watchdog.sh [--install|--uninstall|--help]
+# Default action: install. Empty input selects 127.0.0.1 and port 22.
+# Recovery: 3 failed SSH banner checks -> restart SSH -> recheck -> reboot.
+# A complete kernel freeze may prevent this script from running.
+# ======================================================================
+set -euo pipefail
+
+# Installed paths (the installer itself should be kept elsewhere).
+
+SCRIPT=/usr/local/sbin/ssh-watchdog.sh
+CONF=/etc/ssh-watchdog.conf
+SERVICE=/etc/systemd/system/ssh-watchdog.service
+TIMER=/etc/systemd/system/ssh-watchdog.timer
+STATE=/var/lib/ssh-watchdog
+
+# Parse command-line options before requiring root.
+if [[ $# -gt 1 ]]; then echo "Usage: $0 [--install|--uninstall]"; exit 1; fi
+case "${1:---install}" in
+  --install|--uninstall) ACTION=${1:---install} ;;
+  --help|-h) echo "Usage: $0 [--install|--uninstall]"; exit 0 ;;
+  *) echo "Usage: $0 [--install|--uninstall]"; exit 1 ;;
+esac
+[[ $EUID -eq 0 ]] || { echo 'Run as root or with sudo.'; exit 1; }
+[[ -d /run/systemd/system ]] || { echo 'A running systemd is required.'; exit 1; }
+
+# Uninstall only watchdog components; leave OpenSSH and journal logs intact.
+if [[ $ACTION == --uninstall ]]; then
+    systemctl disable --now ssh-watchdog.timer 2>/dev/null || true
+    systemctl stop ssh-watchdog.service 2>/dev/null || true
+    rm -f "$SCRIPT" "$CONF" "$SERVICE" "$TIMER" /run/ssh-watchdog.failures
+    rm -f "$STATE/last-reboot"
+    rmdir "$STATE" 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl reset-failed ssh-watchdog.service 2>/dev/null || true
+    echo 'SSH watchdog uninstalled. Historical journal logs are retained.'
+    exit 0
+fi
+
+# Prompt for the local SSH endpoint; noninteractive runs use defaults.
+SSH_HOST=127.0.0.1
+SSH_PORT=22
+if [[ -t 0 ]]; then
+    read -r -p 'SSH hostname or IP [127.0.0.1]: ' host || host=${host:-}
+    read -r -p 'SSH port [22]: ' port || port=${port:-}
+    SSH_HOST=${host:-127.0.0.1}
+    SSH_PORT=${port:-22}
+fi
+[[ $SSH_HOST =~ ^[a-zA-Z0-9._:-]+$ ]] || { echo 'Invalid hostname or IP.'; exit 1; }
+[[ $SSH_PORT =~ ^[0-9]{1,5}$ ]] && (( 10#$SSH_PORT >= 1 && 10#$SSH_PORT <= 65535 )) || { echo 'Invalid SSH port.'; exit 1; }
+SSH_PORT=$((10#$SSH_PORT))
+# Restrict recovery to a local address; a remote SSH failure must not reboot this server.
+mapfile -t resolved < <(getent ahosts "$SSH_HOST" | awk '{print $1}' | sort -u)
+mapfile -t local_ips < <(ip -o addr show | awk '{split($4,a,"/"); print a[1]}')
+[[ ${#resolved[@]} -gt 0 ]] || { echo 'Hostname does not resolve.'; exit 1; }
+for addr in "${resolved[@]}"; do
+    found=false
+    if [[ $addr == 127.* || $addr == ::1 ]]; then found=true; fi
+    for local_ip in "${local_ips[@]}"; do [[ $addr != "$local_ip" ]] || found=true; done
+    [[ $found == true ]] || { echo "Not a local address: $addr. Use localhost or a local IP."; exit 1; }
+done
+# Pin a verified local address so later DNS changes cannot trigger a reboot.
+SSH_TARGET=${resolved[0]}
+if [[ $SSH_HOST == localhost || $SSH_HOST == 127.0.0.1 ]]; then SSH_TARGET=127.0.0.1; fi
+# Default recovery policy (all time values are seconds).
+CHECK_TIMEOUT=10
+CHECK_INTERVAL=60
+MAX_FAILURES=3
+REBOOT_COOLDOWN=1800
+BOOT_GRACE_PERIOD=300
+SSH_SERVICE=ssh.service
+systemctl cat "$SSH_SERVICE" >/dev/null 2>&1 || { echo 'Ubuntu ssh.service not found.'; exit 1; }
+check_ssh() {
+    local banner
+    banner=$(timeout "$CHECK_TIMEOUT" bash -c '
+        exec 3<>"/dev/tcp/$1/$2" || exit 1
+        IFS= read -r line <&3 || exit 1
+        printf "%s\n" "$line"
+    ' _ "$1" "$SSH_PORT" 2>/dev/null) || return 1
+    [[ $banner == SSH-* ]]
+}
+echo "Checking local SSH at $SSH_TARGET:$SSH_PORT ..."
+check_ssh "$SSH_TARGET" || { echo 'SSH pre-check failed. Existing installation unchanged.'; exit 1; }
+
+# Disable the previous naming convention to avoid duplicate reboot attempts.
+# Preserve old files for rollback; migrate the most recent cooldown timestamp.
+if systemctl cat server-watchdog.timer >/dev/null 2>&1; then
+    systemctl disable --now server-watchdog.timer
+fi
+if systemctl cat server-watchdog.service >/dev/null 2>&1; then
+    systemctl stop server-watchdog.service
+fi
+# Stop an existing installation before replacing its files.
+if systemctl cat ssh-watchdog.timer >/dev/null 2>&1; then
+    systemctl disable --now ssh-watchdog.timer
+fi
+if systemctl cat ssh-watchdog.service >/dev/null 2>&1; then
+    systemctl stop ssh-watchdog.service
+fi
+install -d -m 750 "$STATE"
+umask 022
+# Preserve the latest valid reboot attempt across migration or reinstallation.
+old=$(cat /var/lib/server-watchdog/last-reboot 2>/dev/null || echo 0)
+current=$(cat "$STATE/last-reboot" 2>/dev/null || echo 0)
+if [[ $old =~ ^[0-9]{1,12}$ && $current =~ ^[0-9]{1,12}$ ]] && (( 10#$old > 10#$current )); then
+    printf '%s\n' "$old" > "$STATE/last-reboot"
+fi
+# Write the root-owned runtime configuration.
+cat > "$CONF" <<EOF
+SSH_HOST='$SSH_TARGET'
+SSH_PORT=$SSH_PORT
+SSH_SERVICE='$SSH_SERVICE'
+CHECK_TIMEOUT=$CHECK_TIMEOUT
+MAX_FAILURES=$MAX_FAILURES
+REBOOT_COOLDOWN=$REBOOT_COOLDOWN
+BOOT_GRACE_PERIOD=$BOOT_GRACE_PERIOD
+EOF
+chmod 640 "$CONF"
+# Generate the runtime script (executed by systemd, not by the installer).
+cat > "$SCRIPT" <<'WATCHDOG'
+#!/usr/bin/env bash
+# Check the local SSH protocol banner, not just the systemd active state.
+set -u
+# Configuration is root-owned and must not be writable by ordinary users.
+source /etc/ssh-watchdog.conf || exit 1
+FAIL_FILE=/run/ssh-watchdog.failures
+REBOOT_FILE=/var/lib/ssh-watchdog/last-reboot
+log() { echo "[$(date '+%F %T')] $*"; }
+check_ssh() {
+    local banner
+    banner=$(timeout "$CHECK_TIMEOUT" bash -c '
+        exec 3<>"/dev/tcp/$1/$2" || exit 1
+        IFS= read -r line <&3 || exit 1
+        printf "%s\n" "$line"
+    ' _ "$SSH_HOST" "$SSH_PORT" 2>/dev/null) || return 1
+    [[ $banner == SSH-* ]]
+}
+# Healthy SSH resets the consecutive failure counter.
+if check_ssh; then
+    echo 0 > "$FAIL_FILE"
+    log 'OK: SSH is responding.'
+    exit 0
+fi
+# Do not perform recovery during the boot grace period, even on manual runs.
+read -r uptime _ < /proc/uptime
+if (( ${uptime%%.*} < BOOT_GRACE_PERIOD )); then
+    log 'WARNING: SSH not responding during boot grace period.'
+    exit 0
+fi
+# Count only consecutive failed probes; restart SSH at the threshold.
+FAILURES=$(cat "$FAIL_FILE" 2>/dev/null || echo 0)
+[[ $FAILURES =~ ^[0-9]{1,8}$ ]] || FAILURES=0
+FAILURES=$((10#$FAILURES + 1))
+echo "$FAILURES" > "$FAIL_FILE" || exit 1
+log "WARNING: SSH check failed ($FAILURES/$MAX_FAILURES)."
+(( FAILURES >= MAX_FAILURES )) || exit 0
+log 'Attempting to restart SSH service.'
+timeout 20 systemctl restart "$SSH_SERVICE" || log 'WARNING: SSH restart failed or timed out.'
+sleep 10
+if check_ssh; then
+    echo 0 > "$FAIL_FILE"
+    log 'SUCCESS: SSH service recovered.'
+    exit 0
+fi
+# Persistent cooldown limits reboot attempts across system restarts.
+NOW=$(date +%s)
+LAST_REBOOT=$(cat "$REBOOT_FILE" 2>/dev/null || echo 0)
+[[ $LAST_REBOOT =~ ^[0-9]{1,12}$ ]] || { log 'ERROR: Invalid reboot state; refusing reboot.'; exit 1; }
+if (( NOW - 10#$LAST_REBOOT < REBOOT_COOLDOWN )); then
+    log 'WARNING: Reboot skipped due to cooldown.'
+    exit 0
+fi
+# Record the reboot attempt before requesting a normal systemd reboot.
+printf '%s\n' "$NOW" > "$REBOOT_FILE" || { log 'ERROR: Cannot save reboot state.'; exit 1; }
+log 'CRITICAL: SSH recovery failed. Requesting normal server reboot.'
+systemctl --no-block reboot
+WATCHDOG
+chmod 750 "$SCRIPT"
+bash -n "$SCRIPT"
+# The oneshot service exits after each check; inactive is normal.
+cat > "$SERVICE" <<EOF
+[Unit]
+Description=SSH Watchdog and Automatic Server Recovery
+After=network.target $SSH_SERVICE
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash $SCRIPT
+TimeoutStartSec=90
+Nice=-10
+OOMScoreAdjust=-900
+EOF
+# Schedule checks after boot and after each previous check completes.
+cat > "$TIMER" <<EOF
+[Unit]
+Description=Run SSH Watchdog Every Minute
+
+[Timer]
+OnBootSec=${BOOT_GRACE_PERIOD}s
+OnUnitInactiveSec=${CHECK_INTERVAL}s
+AccuracySec=1s
+Unit=ssh-watchdog.service
+
+[Install]
+WantedBy=timers.target
+EOF
+chmod 644 "$SERVICE" "$TIMER"
+# Reload unit definitions and verify the first health check.
+systemctl daemon-reload
+systemctl reset-failed ssh-watchdog.service 2>/dev/null || true
+echo 0 > /run/ssh-watchdog.failures
+# Initial run cannot reach the three-failure recovery threshold.
+systemctl start ssh-watchdog.service
+if ! check_ssh "$SSH_TARGET"; then
+    systemctl disable --now ssh-watchdog.timer 2>/dev/null || true
+    echo 'Final SSH check failed. Automatic monitoring disabled.'
+    exit 1
+fi
+systemctl enable --now ssh-watchdog.timer
+cat <<EOF
+
+==========================================
+SSH Watchdog Installation Completed
+==========================================
+Server hostname   : $(hostname)
+SSH host          : $SSH_HOST
+SSH check address : $SSH_TARGET
+SSH port          : $SSH_PORT
+Check interval    : $CHECK_INTERVAL seconds
+Maximum failures  : $MAX_FAILURES
+Reboot cooldown   : $REBOOT_COOLDOWN seconds
+Boot grace period : $BOOT_GRACE_PERIOD seconds
+Auto start        : $(systemctl is-enabled ssh-watchdog.timer)
+Timer status      : $(systemctl is-active ssh-watchdog.timer)
+Configuration     : $CONF
+
+Useful management commands (run as root):
+  systemctl status ssh-watchdog.timer
+  systemctl status ssh-watchdog.service
+  systemctl list-timers ssh-watchdog.timer
+  systemctl start ssh-watchdog.service  # Manual check (may trigger recovery)
+  journalctl -u ssh-watchdog.service -f
+  journalctl -u ssh-watchdog.service --since today
+  systemctl stop ssh-watchdog.timer
+  systemctl start ssh-watchdog.timer
+  systemctl disable --now ssh-watchdog.timer
+  systemctl enable --now ssh-watchdog.timer
+  nano $CONF
+  bash $0 --uninstall
+
+Note: local SSH checks cannot detect every external outage or complete kernel freeze.
+==========================================
+EOF
+
