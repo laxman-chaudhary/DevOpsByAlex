@@ -1,0 +1,18 @@
+# Managed by dh-s3-mount. Do not edit directly; run install.sh --reconfigure.
+[Unit]
+Description=Rclone S3 mount ({{S3_BUCKET}})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+ExecStart={{RCLONE_BIN}} mount {{RCLONE_REMOTE}}:{{S3_BUCKET}} {{MOUNT_PATH}} --config=/etc/dh-s3-mount/rclone.conf --vfs-cache-mode=off --log-level=INFO
+ExecStop={{FUSERMOUNT_BIN}} -u {{MOUNT_PATH}}
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

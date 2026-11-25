@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# dh-s3-mount: provision a single S3-compatible rclone mount on Ubuntu/Debian.
+# Run as root. Never writes to the remote bucket during installation.
+set -Eeuo pipefail
+umask 077
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR=/etc/dh-s3-mount
+SAVED_CONFIG="$STATE_DIR/config.env"
+RCLONE_CONFIG="$STATE_DIR/rclone.conf"
+SYSTEMD_DIR=/etc/systemd/system
+ACTION=install
+CONFIG_SOURCE=""
+PURGE_CONFIG=false
+TMP_CONFIG=""
+TMP_SERVICE=""
+
+log() { printf '[dh-s3-mount] %s\n' "$*"; }
+fail() { printf '[dh-s3-mount] ERROR: %s\n' "$*" >&2; exit 1; }
+cleanup() { [[ -z "$TMP_CONFIG" ]] || rm -f -- "$TMP_CONFIG"; [[ -z "$TMP_SERVICE" ]] || rm -f -- "$TMP_SERVICE"; }
+trap cleanup EXIT
+
+usage() {
+  cat <<'HELP'
+Usage: sudo ./install.sh [action] [--config /path/to/config.env]
+Actions:
+  (none), --install   First install; no disruption if already installed
+  --reconfigure      Apply settings changes (will restart an owned active mount)
+  --status           Check service and mounted filesystem
+  --uninstall        Stop, disable and remove service; keep credentials by default
+  --uninstall --purge-config  Also remove managed credentials/config files
+  -h, --help         Print this help
+
+Use a root-owned config.env (chmod 600) or a local .env copied from .env.example.
+This installer does not take ownership of existing non-managed systemd units/mounts.
+HELP
+}
+while (($#)); do
+  case "$1" in
+    --install) ACTION=install ;;
+    --reconfigure) ACTION=reconfigure ;;
+    --status) ACTION=status ;;
+    --uninstall) ACTION=uninstall ;;
+    --purge-config) PURGE_CONFIG=true ;;
+    --config) shift; (($#)) || fail '--config requires a path'; CONFIG_SOURCE="$1" ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "Unknown argument: $1" ;;
+  esac
+  shift
+done
+[[ "$EUID" -eq 0 ]] || fail 'Run this script as root (sudo).'
+[[ "$PURGE_CONFIG" == false || "$ACTION" == uninstall ]] || fail '--purge-config is only valid with --uninstall'
+
+# Read only whitelisted KEY=VALUE lines (never source or eval arbitrary config).
+read_settings() {
+  local src="$1" line key value
+  [[ -f "$src" ]] || fail "Configuration not found: $src"
+  S3_ENDPOINT='' S3_BUCKET='' S3_ACCESS_KEY='' S3_SECRET_KEY=''
+  S3_REGION='' S3_FORCE_PATH_STYLE=true RCLONE_REMOTE=s3remote
+  MOUNT_PATH=/mnt/s3-storage SERVICE_NAME=dh-s3-mount
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ ^[A-Z][A-Z0-9_]*= ]] || fail "Invalid config line in $src (expected KEY=VALUE)"
+    key="${line%%=*}"; value="${line#*=}"
+    # Support plain text or one pair of matching quotes; no shell expansion.
+    if [[ "$value" == \"*\" && "${#value}" -ge 2 ]]; then value="${value:1:${#value}-2}";
+    elif [[ "$value" == \'*\' && "${#value}" -ge 2 ]]; then value="${value:1:${#value}-2}"; fi
+    case "$key" in
+      S3_ENDPOINT) S3_ENDPOINT="$value" ;;
+      S3_BUCKET) S3_BUCKET="$value" ;;
+      S3_ACCESS_KEY) S3_ACCESS_KEY="$value" ;;
+      S3_SECRET_KEY) S3_SECRET_KEY="$value" ;;
+      S3_REGION) S3_REGION="$value" ;;
+      S3_FORCE_PATH_STYLE) S3_FORCE_PATH_STYLE="$value" ;;
+      RCLONE_REMOTE) RCLONE_REMOTE="$value" ;;
+      MOUNT_PATH) MOUNT_PATH="$value" ;;
+      SERVICE_NAME) SERVICE_NAME="$value" ;;
+      *) fail "Unknown configuration key: $key" ;;
+    esac
+  done < "$src"
+}
+
+validate_settings() {
+  [[ "$S3_ENDPOINT" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$ ]] || fail 'S3_ENDPOINT must be an HTTPS endpoint with no path.'
+  [[ "$S3_BUCKET" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$S3_BUCKET" != *..* ]] || fail 'Invalid S3_BUCKET name.'
+  [[ -n "$S3_ACCESS_KEY" && "$S3_ACCESS_KEY" != REPLACE_ME ]] || fail 'Set S3_ACCESS_KEY.'
+  [[ -n "$S3_SECRET_KEY" && "$S3_SECRET_KEY" != REPLACE_ME ]] || fail 'Set S3_SECRET_KEY.'
+  [[ "$RCLONE_REMOTE" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || fail 'Invalid RCLONE_REMOTE.'
+  [[ "$SERVICE_NAME" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || fail 'Invalid SERVICE_NAME.'
+  [[ "$MOUNT_PATH" =~ ^/[A-Za-z0-9_/-]+$ && "$MOUNT_PATH" != *..* && "$MOUNT_PATH" != / ]] || fail 'MOUNT_PATH must be a safe absolute directory (no spaces or ..).'
+  [[ "$S3_REGION" =~ ^[A-Za-z0-9-]*$ ]] || fail 'Invalid S3_REGION.'
+  [[ "$S3_FORCE_PATH_STYLE" == true || "$S3_FORCE_PATH_STYLE" == false ]] || fail 'S3_FORCE_PATH_STYLE must be true or false.'
+}
+
+# Expand literal placeholders; do not run shell evaluation on secrets.
+render_template() {
+  local input="$1" output="$2" line
+  : > "$output"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line//\{\{RCLONE_REMOTE\}\}/$RCLONE_REMOTE}"
+    line="${line//\{\{S3_BUCKET\}\}/$S3_BUCKET}"
+    line="${line//\{\{S3_ENDPOINT\}\}/$S3_ENDPOINT}"
+    line="${line//\{\{S3_ACCESS_KEY\}\}/$S3_ACCESS_KEY}"
+    line="${line//\{\{S3_SECRET_KEY\}\}/$S3_SECRET_KEY}"
+    line="${line//\{\{S3_REGION\}\}/$S3_REGION}"
+    line="${line//\{\{S3_FORCE_PATH_STYLE\}\}/$S3_FORCE_PATH_STYLE}"
+    line="${line//\{\{MOUNT_PATH\}\}/$MOUNT_PATH}"
+    line="${line//\{\{RCLONE_BIN\}\}/$RCLONE_BIN}"
+    line="${line//\{\{FUSERMOUNT_BIN\}\}/$FUSERMOUNT_BIN}"
+    printf '%s\n' "$line" >> "$output"
+  done < "$input"
+}
+
+ensure_dependencies() {
+  local missing=() p
+  for p in rclone fusermount3 findmnt fuser; do
+    command -v "$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+  if ((${#missing[@]})); then
+    [[ -f /etc/os-release ]] || fail 'Cannot identify Linux distribution.'
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    [[ "${ID:-}" == ubuntu || "${ID:-}" == debian || " ${ID_LIKE:-} " == *' debian '* ]] || fail 'Automatic installation supports Ubuntu/Debian only.'
+    command -v apt-get >/dev/null || fail 'apt-get is required.'
+    log "Missing dependencies: ${missing[*]}; installing required packages via apt-get."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends rclone fuse3 util-linux psmisc
+  fi
+  for p in rclone fusermount3 findmnt fuser; do command -v "$p" >/dev/null || fail "Dependency still missing: $p"; done
+  RCLONE_BIN="$(command -v rclone)"
+  FUSERMOUNT_BIN="$(command -v fusermount3)"
+  [[ "$RCLONE_BIN" == /* && "$FUSERMOUNT_BIN" == /* ]] || fail 'Required binaries must have absolute paths.'
+}
+
+managed_unit() {
+  local unit="$1"
+  [[ -f "$unit" ]] && grep -Fqx '# Managed by dh-s3-mount. Do not edit directly; run install.sh --reconfigure.' "$unit"
+}
+
+get_existing_service() {
+  [[ -f "$STATE_DIR/service.name" ]] || return 1
+  IFS= read -r EXISTING_SERVICE < "$STATE_DIR/service.name"
+  [[ "$EXISTING_SERVICE" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || fail 'Invalid installed service metadata.'
+}
+
+check_mount_free() {
+  local path="$1" source
+  if findmnt -rn --mountpoint "$path" >/dev/null 2>&1; then
+    source="$(findmnt -rn -o SOURCE --mountpoint "$path" || true)"
+    fail "Mount point $path is already in use ($source). Stop/unmount it manually after completing transfers."
+  fi
+}
+
+status() {
+  local service path
+  if ! get_existing_service; then log 'Not installed (no managed service metadata).'; return 1; fi
+  service="$EXISTING_SERVICE"
+  path="$(cat "$STATE_DIR/mount.path")"
+  printf 'Service: %s.service\nMount: %s\n' "$service" "$path"
+  systemctl is-enabled "$service.service" || true
+  systemctl is-active "$service.service" || true
+  findmnt --mountpoint "$path" || true
+  systemctl is-active --quiet "$service.service" && findmnt -rn --mountpoint "$path" >/dev/null
+}
+
+uninstall() {
+  local unit path svc
+  if ! get_existing_service; then log 'No managed installation found; nothing to uninstall.'; return 0; fi
+  svc="$EXISTING_SERVICE"; unit="$SYSTEMD_DIR/$svc.service"
+  managed_unit "$unit" || fail "Refusing to remove service not managed by this project: $unit"
+  path="$(cat "$STATE_DIR/mount.path")"
+  log "Stopping $svc.service (complete all file operations first)."
+  systemctl stop "$svc.service" || fail 'Service stop failed. Check open files; no files removed.'
+  if findmnt -rn --mountpoint "$path" >/dev/null 2>&1; then fail "Still mounted at $path; refusing to remove the service."; fi
+  systemctl disable "$svc.service" >/dev/null
+  rm -f -- "$unit"
+  systemctl daemon-reload
+  if [[ -d "$path" ]]; then rmdir -- "$path" 2>/dev/null || true; fi
+  if [[ "$PURGE_CONFIG" == true ]]; then
+    rm -f -- "$STATE_DIR/config.env" "$STATE_DIR/rclone.conf" "$STATE_DIR/service.name" "$STATE_DIR/mount.path"
+    rmdir -- "$STATE_DIR" 2>/dev/null || true
+    log 'Removed managed configuration and credentials.'
+  else
+    rm -f -- "$STATE_DIR/service.name" "$STATE_DIR/mount.path"
+    log "Retained credentials/config in $STATE_DIR (use --purge-config to delete)."
+  fi
+  log 'Uninstalled. No remote S3 objects were deleted.'
+}
+
+[[ "$(cat /proc/1/comm 2>/dev/null || true)" == systemd ]] || fail 'Requires systemd as PID 1.'
+case "$ACTION" in
+  status) status; exit $? ;;
+  uninstall) uninstall; exit 0 ;;
+esac
+
+if [[ -z "$CONFIG_SOURCE" ]]; then
+  if [[ -f "$SAVED_CONFIG" ]]; then CONFIG_SOURCE="$SAVED_CONFIG"
+  else CONFIG_SOURCE="$PROJECT_DIR/.env"; fi
+fi
+read_settings "$CONFIG_SOURCE"
+validate_settings
+if get_existing_service; then
+  [[ "$EXISTING_SERVICE" == "$SERVICE_NAME" ]] || fail "Already installed as $EXISTING_SERVICE; uninstall it before changing SERVICE_NAME."
+  if [[ "$ACTION" == install ]]; then
+    log "Already installed as $SERVICE_NAME.service. Use --status or --reconfigure to apply changes."
+    exit 0
+  fi
+else
+  [[ "$ACTION" != reconfigure ]] || fail 'No managed installation found. Use --install first.'
+fi
+
+ensure_dependencies
+install -d -m 700 "$STATE_DIR"
+TMP_CONFIG="$(mktemp "$STATE_DIR/.rclone.XXXXXX")"
+TMP_SERVICE="$(mktemp "$STATE_DIR/.service.XXXXXX")"
+render_template "$PROJECT_DIR/config/rclone.conf.template" "$TMP_CONFIG"
+render_template "$PROJECT_DIR/systemd/dh-s3-mount.service.template" "$TMP_SERVICE"
+chmod 600 "$TMP_CONFIG" "$TMP_SERVICE"
+
+log "Checking S3 bucket access: $S3_BUCKET"
+if ! "$RCLONE_BIN" --config "$TMP_CONFIG" lsf "$RCLONE_REMOTE:$S3_BUCKET" --max-depth 1 >/dev/null; then
+  fail 'S3 preflight failed: check endpoint, bucket, region, credentials and ListBucket permission. Existing service untouched.'
+fi
+unit="$SYSTEMD_DIR/$SERVICE_NAME.service"
+if [[ -f "$unit" ]] && ! managed_unit "$unit"; then fail "Unit exists and is not managed by this project: $unit"; fi
+
+if [[ "$ACTION" == install ]]; then
+  check_mount_free "$MOUNT_PATH"
+else
+  oldpath="$(cat "$STATE_DIR/mount.path")"
+  [[ "$oldpath" == "$MOUNT_PATH" ]] || fail 'MOUNT_PATH changes require uninstall/reinstall to avoid orphaned mounts.'
+  log 'Reconfigure will stop the existing service. Ensure no processes have open files.'
+  if findmnt -rn --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 && fuser -m "$MOUNT_PATH" >/dev/null 2>&1; then
+    fail 'Mount is currently in use. Stop users/transfers and retry --reconfigure.'
+  fi
+  systemctl stop "$SERVICE_NAME.service" || fail 'Could not stop old service; configuration unchanged.'
+  check_mount_free "$MOUNT_PATH"
+fi
+
+[[ -d "$MOUNT_PATH" ]] || install -d -m 755 "$MOUNT_PATH"
+# Save the accepted, validated configuration and generated rclone credentials.
+# Do not store plaintext credentials in the systemd unit.
+if [[ "$(realpath -m -- "$CONFIG_SOURCE")" != "$SAVED_CONFIG" ]]; then
+  install -m 600 "$CONFIG_SOURCE" "$SAVED_CONFIG"
+else
+  chmod 600 "$SAVED_CONFIG"
+fi
+install -m 600 "$TMP_CONFIG" "$RCLONE_CONFIG"
+install -m 644 "$TMP_SERVICE" "$unit"
+printf '%s\n' "$SERVICE_NAME" > "$STATE_DIR/service.name"
+printf '%s\n' "$MOUNT_PATH" > "$STATE_DIR/mount.path"
+chmod 600 "$STATE_DIR/service.name" "$STATE_DIR/mount.path"
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME.service" >/dev/null
+if ! systemctl start "$SERVICE_NAME.service"; then
+  log "Service failed to start; inspect: journalctl -u $SERVICE_NAME.service -n 80 --no-pager"
+  fail 'Service start failed.'
+fi
+systemctl is-active --quiet "$SERVICE_NAME.service" || fail 'Service not active after start.'
+findmnt -rn --mountpoint "$MOUNT_PATH" >/dev/null || fail 'Service active but mount point not visible.'
+log "SUCCESS: $RCLONE_REMOTE:$S3_BUCKET mounted at $MOUNT_PATH"
+log "Auto-start enabled: $SERVICE_NAME.service"
+log "Status: sudo ./install.sh --status"

@@ -1,0 +1,91 @@
+# dh-s3-mount
+
+Reusable, systemd-managed mount of one S3-compatible bucket per Ubuntu/Debian server, using rclone and FUSE **without a VFS disk file cache**.
+
+## What it does
+
+- Detects `rclone`, `fusermount3`, `findmnt`, and `fuser`, and installs missing packages (`rclone`, `fuse3`, `util-linux`, `psmisc`) with apt on Ubuntu/Debian.
+- Validates S3 configuration and **lists the target bucket before changing an existing service**.
+- Creates a root-only rclone credentials file under `/etc/dh-s3-mount/rclone.conf`.
+- Creates, enables, and starts a systemd service (`dh-s3-mount.service` by default).
+- Uses `--vfs-cache-mode=off`; does not create a dedicated disk file-content cache.
+- Supports `--status`, `--reconfigure`, and `--uninstall`, with optional credentials purge.
+- Refuses to take over an unmanaged systemd unit or an existing manually mounted filesystem.
+
+## Quick start
+
+On EACH Ubuntu/Debian host:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+sudoedit .env                  # Set your server-specific bucket and keys
+sudo ./install.sh
+sudo ./install.sh --status
+```
+
+Prefer storing secrets **outside the checkout**:
+
+```bash
+sudo install -d -m 700 /etc/dh-s3-mount
+sudo install -m 600 .env.example /etc/dh-s3-mount/config.env
+sudoedit /etc/dh-s3-mount/config.env
+sudo ./install.sh --config /etc/dh-s3-mount/config.env
+```
+
+The default S3 endpoint is `https://s3-np1.datahub.com.np`; change it for other providers. The bucket name is mandatory. The default service name is `dh-s3-mount`, remote name `s3remote`, mount path `/mnt/s3-storage`.
+
+**If your server already has a manual mount at the destination**, finish all transfers and unmount it yourself before running the installer. The installer will not forcibly take it over.
+
+## Commands
+
+```bash
+sudo ./install.sh --install
+sudo ./install.sh --status
+sudo ./install.sh --reconfigure --config /path/to/updated.env
+sudo ./install.sh --uninstall
+sudo ./install.sh --uninstall --purge-config
+```
+
+- A repeat `--install` with an existing managed deployment is a no-op, not an implicit restart.
+- Use `--reconfigure` when changing S3 keys or endpoint. It requires the same service name and mount path and a quiet mount; it may briefly interrupt access.
+- `--uninstall` retains `/etc/dh-s3-mount/config.env` and `rclone.conf` so reinstallation is possible.
+- `--purge-config` removes both of those files. Neither uninstall option deletes remote objects.
+
+## Where files go
+
+| Location | Purpose |
+|---|---|
+| `.env.example` | Committable configuration sample |
+| `.env` | Optional local credentials; gitignored |
+| `/etc/dh-s3-mount/config.env` | Persistent root-only settings |
+| `/etc/dh-s3-mount/rclone.conf` | Generated root-only rclone credentials |
+| `/etc/systemd/system/dh-s3-mount.service` | Generated systemd unit (name configurable) |
+| `/mnt/s3-storage` | Default mounted bucket |
+
+## Verify
+
+```bash
+sudo ./install.sh --status
+systemctl status dh-s3-mount.service
+findmnt /mnt/s3-storage
+ls -la /mnt/s3-storage
+journalctl -u dh-s3-mount.service -n 50 --no-pager
+```
+
+### Known constraints
+
+- **S3 is not a POSIX disk**: no reliable shared locking, atomic rename, or database data-directory semantics. Avoid using a mount for live PostgreSQL/MariaDB data.
+- With VFS cache `off`, some file write patterns are unsupported and upload retries cannot be performed by the VFS. For backups, create a backup on local disk and upload directly with `rclone copy` or `aws s3 cp`.
+- This installer tests bucket listing; credentials with only object-specific access may fail preflight.
+- This installer handles **one bucket mount per host**. For multiple mounts on one host, extend service naming and per-instance state management before reuse.
+- A root-owned mount is not automatically available to unprivileged users. `--allow-other` is intentionally not enabled.
+- For fleets, roll out with Ansible, separate credentials per host, and use a secret manager or Ansible Vault.
+- Never commit `.env`, credentials, or generated `rclone.conf` files to Git. Rotate any previously exposed keys.
+
+More detail: [Installation](docs/INSTALLATION.md) · [Configuration](docs/CONFIGURATION.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
+
+## Upstream references
+
+- https://rclone.org/commands/rclone_mount/
+- https://rclone.org/s3/
