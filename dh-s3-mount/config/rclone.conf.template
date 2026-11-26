@@ -6,3 +6,4 @@ secret_access_key = {{S3_SECRET_KEY}}
 region = {{S3_REGION}}
 endpoint = {{S3_ENDPOINT}}
 force_path_style = {{S3_FORCE_PATH_STYLE}}
+directory_markers = true

@@ -89,3 +89,14 @@ More detail: [Installation](docs/INSTALLATION.md) · [Configuration](docs/CONFIG
 
 - https://rclone.org/commands/rclone_mount/
 - https://rclone.org/s3/
+
+
+## Reliability notes (v1.1)
+
+- The mount defaults to **no VFS file-content disk cache**. It is good for browsing and sequential access, but it is not a full POSIX filesystem. Applications that write `.part` files and rename them may fail or behave unexpectedly.
+- `directory_markers = true` enables persistence of newly created empty S3 directories if supported by the storage provider.
+- `--dir-cache-time=30s` refreshes external changes sooner (S3 usually does not provide rclone mount change polling). This increases listing requests. To force a refresh without restarting the service, run `systemctl kill -s HUP --kill-whom=main dh-s3-mount`, substituting your service name.
+- Large files should be uploaded with **`rclone copy` directly**, not copied through the FUSE mount. See `docs/TROUBLESHOOTING.md` for an example.
+- A stale FUSE mount must be diagnosed before detaching. The installer intentionally does not auto-run `fusermount3 -uz` because doing so could detach a live mount with pending I/O.
+- Service restart rate limits prevent an endless aggressive restart loop when a stale mount remains.
+- This release provides configuration and operational improvements, **not** automatic stale-mount recovery. Test on a staging server before rollout.
