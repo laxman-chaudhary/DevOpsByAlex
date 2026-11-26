@@ -40,8 +40,27 @@ grep -Fq '{{RCLONE_BIN}} cleanup' systemd/dh-s3-mount-cleanup.service.template |
 grep -q 'CLEANUP_ENABLED' install.sh || fail 'install.sh does not handle CLEANUP_ENABLED'
 grep -q 'CLEANUP_TIME' install.sh || fail 'install.sh does not handle CLEANUP_TIME'
 
-# 5. VFS cache mode stays documented as off; Option A is the supported path for
-#    multi-GB uploads, so an accidental switch to a disk cache must be explicit.
-grep -q -- '--vfs-cache-mode=off' systemd/dh-s3-mount.service.template || fail 'mount template lost --vfs-cache-mode=off'
+# 5. VFS cache mode is a validated knob, not a literal flag: rclone aborts on an
+#    unknown value (there is no "on"/"true"), which would leave the mount dead.
+grep -q '{{VFS_CACHE_ARGS}}' systemd/dh-s3-mount.service.template || fail 'service template must inject {{VFS_CACHE_ARGS}}'
+grep -q 'VFS_CACHE_MODE must be one of' install.sh || fail 'VFS_CACHE_MODE is not validated'
+
+# Exercise the real builders from install.sh so the emitted flags cannot drift.
+eval "$(sed -n '/^build_vfs_cache_args()/,/^}/p' install.sh)"
+eval "$(sed -n '/^size_to_kib()/,/^}/p' install.sh)"
+
+VFS_CACHE_MODE=off build_vfs_cache_args
+[[ -z "$VFS_CACHE_ARGS" ]] || fail 'VFS_CACHE_MODE=off must not add any cache flag'
+
+VFS_CACHE_MODE=full VFS_CACHE_DIR=/var/cache/dh-s3-mount \
+  VFS_CACHE_MAX_SIZE=20G VFS_CACHE_MAX_AGE=24h build_vfs_cache_args
+for want in '--vfs-cache-mode=full' '--cache-dir=/var/cache/dh-s3-mount' \
+            '--vfs-cache-max-size=20G' '--vfs-cache-max-age=24h'; do
+  [[ "$VFS_CACHE_ARGS" == *"$want"* ]] || fail "cache args are missing $want"
+done
+
+[[ "$(size_to_kib 20G)" -eq $((20 * 1024 * 1024)) ]] || fail 'size_to_kib is wrong for 20G'
+[[ "$(size_to_kib 512M)" -eq 524288 ]] || fail 'size_to_kib is wrong for 512M'
+[[ "$(size_to_kib off)" -eq 0 ]] || fail 'size_to_kib is wrong for off'
 
 printf 'Static checks passed.\n'

@@ -66,6 +66,9 @@ read_settings() {
   S3_REGION='' S3_FORCE_PATH_STYLE=true RCLONE_REMOTE=s3remote
   MOUNT_PATH=/mnt/s3-storage SERVICE_NAME=dh-s3-mount
   CLEANUP_ENABLED=true CLEANUP_TIME=03:00
+  VFS_CACHE_MODE=full VFS_CACHE_DIR=/var/cache/dh-s3-mount
+  VFS_CACHE_MAX_SIZE=20G VFS_CACHE_MAX_AGE=24h
+  VFS_CACHE_ARGS=""
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
@@ -86,6 +89,10 @@ read_settings() {
       SERVICE_NAME) SERVICE_NAME="$value" ;;
       CLEANUP_ENABLED) CLEANUP_ENABLED="$value" ;;
       CLEANUP_TIME) CLEANUP_TIME="$value" ;;
+      VFS_CACHE_MODE) VFS_CACHE_MODE="$value" ;;
+      VFS_CACHE_DIR) VFS_CACHE_DIR="$value" ;;
+      VFS_CACHE_MAX_SIZE) VFS_CACHE_MAX_SIZE="$value" ;;
+      VFS_CACHE_MAX_AGE) VFS_CACHE_MAX_AGE="$value" ;;
       *) fail "Unknown configuration key: $key" ;;
     esac
   done < "$src"
@@ -103,6 +110,43 @@ validate_settings() {
   [[ "$S3_FORCE_PATH_STYLE" == true || "$S3_FORCE_PATH_STYLE" == false ]] || fail 'S3_FORCE_PATH_STYLE must be true or false.'
   [[ "$CLEANUP_ENABLED" == true || "$CLEANUP_ENABLED" == false ]] || fail 'CLEANUP_ENABLED must be true or false.'
   [[ "$CLEANUP_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || fail 'CLEANUP_TIME must be HH:MM in 24-hour form.'
+  # rclone has no "on"/"true" value for this flag; anything else aborts the mount.
+  [[ "$VFS_CACHE_MODE" =~ ^(off|minimal|writes|full)$ ]] || fail 'VFS_CACHE_MODE must be one of: off, minimal, writes, full.'
+  [[ "$VFS_CACHE_DIR" =~ ^/[A-Za-z0-9_/-]+$ && "$VFS_CACHE_DIR" != *..* && "$VFS_CACHE_DIR" != / ]] || fail 'VFS_CACHE_DIR must be a safe absolute directory (no spaces or ..).'
+  [[ "$VFS_CACHE_MAX_SIZE" == off || "$VFS_CACHE_MAX_SIZE" =~ ^[0-9]+([kKmMgGtTpP]([iI]?[bB])?)?$ ]] || fail 'VFS_CACHE_MAX_SIZE must be a size such as 20G, 512M, or off.'
+  [[ "$VFS_CACHE_MAX_AGE" == off || "$VFS_CACHE_MAX_AGE" =~ ^[0-9]+(s|m|h|d|w)$ ]] || fail 'VFS_CACHE_MAX_AGE must be a duration such as 24h, 30m, or off.'
+}
+
+# Build the VFS cache flags. `off` adds nothing at all, so a host that opts out
+# keeps exactly the old command line. Kept as a function so tests can exercise
+# it without a systemd host.
+build_vfs_cache_args() {
+  VFS_CACHE_ARGS=""
+  [[ "$VFS_CACHE_MODE" == off ]] && return 0
+  VFS_CACHE_ARGS=" --vfs-cache-mode=$VFS_CACHE_MODE --cache-dir=$VFS_CACHE_DIR"
+  VFS_CACHE_ARGS+=" --vfs-cache-max-size=$VFS_CACHE_MAX_SIZE"
+  VFS_CACHE_ARGS+=" --vfs-cache-max-age=$VFS_CACHE_MAX_AGE"
+  return 0
+}
+
+# rclone size suffix -> KiB. Returns 0 for "off"/unparseable.
+size_to_kib() {
+  local s="$1" num unit mult
+  [[ "$s" == off ]] && { printf '0\n'; return 0; }
+  num="${s//[!0-9]/}"
+  unit="${s##*[0-9]}"
+  unit="${unit%%[iI]*}"
+  unit="${unit%[bB]}"
+  unit="$(printf '%s' "$unit" | tr '[:lower:]' '[:upper:]')"
+  case "$unit" in
+    ''|B) mult=1 ;;
+    K) mult=1024 ;;
+    M) mult=1048576 ;;
+    G) mult=1073741824 ;;
+    T) mult=1099511627776 ;;
+    *) printf '0\n'; return 0 ;;
+  esac
+  printf '%s\n' "$((num * mult / 1024))"
 }
 
 # Expand literal placeholders; do not run shell evaluation on secrets.
@@ -119,6 +163,7 @@ render_template() {
     line="${line//\{\{S3_FORCE_PATH_STYLE\}\}/$S3_FORCE_PATH_STYLE}"
     line="${line//\{\{SERVICE_NAME\}\}/$SERVICE_NAME}"
     line="${line//\{\{CLEANUP_TIME\}\}/$CLEANUP_TIME}"
+    line="${line//\{\{VFS_CACHE_ARGS\}\}/$VFS_CACHE_ARGS}"
     line="${line//\{\{MOUNT_PATH\}\}/$MOUNT_PATH}"
     line="${line//\{\{RCLONE_BIN\}\}/$RCLONE_BIN}"
     line="${line//\{\{FUSERMOUNT_BIN\}\}/$FUSERMOUNT_BIN}"
@@ -168,14 +213,28 @@ check_mount_free() {
 }
 
 status() {
-  local service path
+  local service path unit cache_mode cache_dir
   if ! get_existing_service; then log 'Not installed (no managed service metadata).'; return 1; fi
   service="$EXISTING_SERVICE"
   path="$(cat "$STATE_DIR/mount.path")"
+  unit="$SYSTEMD_DIR/$service.service"
   printf 'Service: %s.service\nMount: %s\n' "$service" "$path"
   systemctl is-enabled "$service.service" || true
   systemctl is-active "$service.service" || true
   findmnt --mountpoint "$path" || true
+  # Report the cache from the generated unit rather than from config.env, so the
+  # output reflects what the running service was actually started with.
+  cache_mode="$(grep -o -- '--vfs-cache-mode=[^ ]*' "$unit" 2>/dev/null | head -1 || true)"
+  cache_dir="$(grep -o -- '--cache-dir=[^ ]*' "$unit" 2>/dev/null | head -1 || true)"
+  if [[ -n "$cache_mode" ]]; then
+    printf 'VFS cache: %s %s\n' "$cache_mode" "${cache_dir:-}"
+    if [[ -n "$cache_dir" && -d "${cache_dir#--cache-dir=}" ]]; then
+      printf 'Cache disk: '
+      df -Ph "${cache_dir#--cache-dir=}" | awk 'NR==2 {print $4 " free of " $2 " on " $6}'
+    fi
+  else
+    printf 'VFS cache: mode=off (no local file-content cache)\n'
+  fi
   if [[ -f "$SYSTEMD_DIR/${service}-cleanup.timer" ]]; then
     printf 'Multipart cleanup timer: %s-cleanup.timer\n' "$service"
     systemctl is-enabled "${service}-cleanup.timer" || true
@@ -214,6 +273,7 @@ uninstall() {
   else
     rm -f -- "$STATE_DIR/service.name" "$STATE_DIR/mount.path"
     log "Retained credentials/config in $STATE_DIR (use --purge-config to delete)."
+    log 'Local VFS cache contents were left in place and can be deleted manually.'
   fi
   log 'Uninstalled. No remote S3 objects were deleted.'
 }
@@ -230,6 +290,7 @@ if [[ -z "$CONFIG_SOURCE" ]]; then
 fi
 read_settings "$CONFIG_SOURCE"
 validate_settings
+build_vfs_cache_args
 if get_existing_service; then
   [[ "$EXISTING_SERVICE" == "$SERVICE_NAME" ]] || fail "Already installed as $EXISTING_SERVICE; uninstall it before changing SERVICE_NAME."
   if [[ "$ACTION" == install ]]; then
@@ -278,6 +339,17 @@ else
 fi
 
 [[ -d "$MOUNT_PATH" ]] || install -d -m 755 "$MOUNT_PATH"
+# The cache is a bounded local staging area, not user data: create it root-only
+# and warn when its ceiling would eat the filesystem it lives on.
+if [[ "$VFS_CACHE_MODE" != off ]]; then
+  install -d -m 700 "$VFS_CACHE_DIR"
+  want_kib="$(size_to_kib "$VFS_CACHE_MAX_SIZE")"
+  avail_kib="$(df -Pk "$VFS_CACHE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ "$want_kib" =~ ^[0-9]+$ && "$avail_kib" =~ ^[0-9]+$ ]] && ((want_kib > 0 && want_kib * 2 > avail_kib)); then
+    log "WARNING: VFS_CACHE_MAX_SIZE=$VFS_CACHE_MAX_SIZE is more than half of the free space on $VFS_CACHE_DIR."
+    log "WARNING: lower it or move VFS_CACHE_DIR to a larger filesystem before serving multi-GB writes."
+  fi
+fi
 # Save the accepted, validated configuration and generated rclone credentials.
 # Do not store plaintext credentials in the systemd unit.
 if [[ "$(realpath -m -- "$CONFIG_SOURCE")" != "$SAVED_CONFIG" ]]; then

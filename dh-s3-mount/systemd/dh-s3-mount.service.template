@@ -10,7 +10,7 @@ StartLimitBurst=5
 Type=notify
 User=root
 Group=root
-ExecStart={{RCLONE_BIN}} mount {{RCLONE_REMOTE}}:{{S3_BUCKET}} {{MOUNT_PATH}} --config=/etc/dh-s3-mount/rclone.conf --vfs-cache-mode=off --dir-cache-time=30s --poll-interval=0 --s3-upload-cutoff=200Mi --s3-chunk-size=16Mi --s3-upload-concurrency=2 --log-level=INFO
+ExecStart={{RCLONE_BIN}} mount {{RCLONE_REMOTE}}:{{S3_BUCKET}} {{MOUNT_PATH}} --config=/etc/dh-s3-mount/rclone.conf{{VFS_CACHE_ARGS}} --dir-cache-time=30s --poll-interval=0 --s3-upload-cutoff=200Mi --s3-chunk-size=64Mi --s3-upload-concurrency=4 --log-level=INFO
 ExecStop={{FUSERMOUNT_BIN}} -u {{MOUNT_PATH}}
 Restart=on-failure
 RestartSec=10

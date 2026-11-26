@@ -7,9 +7,10 @@
 5. Run `sudo ./install.sh`, then `sudo ./install.sh --status`.
 6. Inspect `systemctl status dh-s3-mount.service` and `findmnt /mnt/s3-storage`.
 7. Confirm the multipart cleanup timer: `systemctl list-timers 'dh-s3-mount-cleanup*'` (disable with `CLEANUP_ENABLED="false"`).
-8. Install the upload helper for any cron-driven transfer:
+8. Check cache headroom before trusting mount writes: the default `full` cache wants up to 20G on the filesystem holding `/var/cache/dh-s3-mount`. `df -h /var/cache/dh-s3-mount` should show more free space than `VFS_CACHE_MAX_SIZE`; the installer prints a warning when the ceiling is more than half of free space. Lower `VFS_CACHE_MAX_SIZE`, point `VFS_CACHE_DIR` at a larger volume, or set `VFS_CACHE_MODE="off"`.
+9. Install the upload helper for any cron-driven transfer:
    `sudo install -m 755 scripts/rclone-upload.sh /usr/local/bin/rclone-upload.sh`
-9. Reboot only during a maintenance window, then rerun the verification.
+10. Reboot only during a maintenance window, then rerun the verification.
 
 The installer checks commands and installs missing `rclone`, `fuse3`, `util-linux`, and `psmisc` packages through apt. It does not try to install a different OS package manager.
 

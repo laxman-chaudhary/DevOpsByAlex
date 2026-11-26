@@ -1,6 +1,6 @@
 # dh-s3-mount
 
-Reusable, systemd-managed mount of one S3-compatible bucket per Ubuntu/Debian server, using rclone and FUSE **without a VFS disk file cache**.
+Reusable, systemd-managed mount of one S3-compatible bucket per Ubuntu/Debian server, using rclone and FUSE with a **bounded VFS disk cache** (configurable, `off` restores the old no-cache behavior).
 
 ## What it does
 
@@ -10,7 +10,7 @@ Reusable, systemd-managed mount of one S3-compatible bucket per Ubuntu/Debian se
 - Creates, enables, and starts a systemd service (`dh-s3-mount.service` by default).
 - Installs a daily `rclone cleanup` timer that aborts stale multipart uploads (invisible in listings, but billed), configurable or disabled per host.
 - Ships `scripts/rclone-upload.sh`, a locked, retry-capable `rclone move` wrapper for multi-GB files that must not go through the mount.
-- Uses `--vfs-cache-mode=off`; does not create a dedicated disk file-content cache.
+- Uses `--vfs-cache-mode=full` by default with a 20G / 24h bounded cache under `/var/cache/dh-s3-mount`; `VFS_CACHE_MODE=off` restores no-cache behavior.
 - Supports `--status`, `--reconfigure`, and `--uninstall`, with optional credentials purge.
 - Refuses to take over an unmanaged systemd unit or an existing manually mounted filesystem.
 
@@ -65,6 +65,7 @@ sudo ./install.sh --uninstall --purge-config
 | `/etc/systemd/system/dh-s3-mount.service` | Generated systemd unit (name configurable) |
 | `/etc/systemd/system/dh-s3-mount-cleanup.{service,timer}` | Generated multipart cleanup units, when enabled |
 | `/mnt/s3-storage` | Default mounted bucket |
+| `/var/cache/dh-s3-mount` | Bounded VFS cache, root-only (`VFS_CACHE_MODE=off` omits it) |
 | `scripts/rclone-upload.sh` | Direct-to-S3 upload helper for multi-GB files |
 
 ## Verify
@@ -80,7 +81,8 @@ journalctl -u dh-s3-mount.service -n 50 --no-pager
 ### Known constraints
 
 - **S3 is not a POSIX disk**: no reliable shared locking, atomic rename, or database data-directory semantics. Avoid using a mount for live PostgreSQL/MariaDB data.
-- With VFS cache `off`, some file write patterns are unsupported and upload retries cannot be performed by the VFS. For backups, create a backup on local disk and upload directly with `rclone copy` or `aws s3 cp`.
+- With `VFS_CACHE_MODE=off`, some file write patterns are unsupported and upload retries cannot be performed by the VFS. For bulk backups, upload directly with `rclone copy`/`move` or `aws s3 cp`.
+- With `full`/`writes` cache, the cache directory is a **hard disk-space boundary**: writes count against `VFS_CACHE_MAX_SIZE`, and a stalled reader can pin objects for `VFS_CACHE_MAX_AGE`. Keep the ceiling comfortably below free space.
 - This installer tests bucket listing; credentials with only object-specific access may fail preflight.
 - This installer handles **one bucket mount per host**. For multiple mounts on one host, extend service naming and per-instance state management before reuse.
 - A root-owned mount is not automatically available to unprivileged users. `--allow-other` is intentionally not enabled.
@@ -97,11 +99,11 @@ More detail: [Installation](docs/INSTALLATION.md) · [Configuration](docs/CONFIG
 
 ## Reliability notes (v1.1)
 
-- The mount defaults to **no VFS file-content disk cache**. It is good for browsing and sequential access, but it is not a full POSIX filesystem. Applications that write `.part` files and rename them may fail or behave unexpectedly.
+- The mount defaults to `--vfs-cache-mode=full`, so reads and writes are buffered on local disk and failed uploads can be retried. It is still not a full POSIX filesystem: no shared locking, no atomic rename across clients. Applications that write `.part` files and rename them work only because the VFS can now seek and rename locally before upload.
 - `directory_markers = true` enables persistence of newly created empty S3 directories if supported by the storage provider.
 - `--dir-cache-time=30s` refreshes external changes sooner (S3 usually does not provide rclone mount change polling). This increases listing requests. To force a refresh without restarting the service, run `systemctl kill -s HUP --kill-whom=main dh-s3-mount`, substituting your service name.
-- Large files should be uploaded with **`rclone copy`/`move` directly**, not copied through the FUSE mount. `scripts/rclone-upload.sh` wraps this for cron use. See `docs/TROUBLESHOOTING.md` for the failure mode and examples.
-- `--vfs-cache-mode=off` cannot retry an interrupted upload and cannot seek, so a multi-GB write that meets one transient error restarts from zero. This is a limitation of the mode, not of the bucket.
+- Multi-GB transfers are still best done with **`rclone copy`/`move` directly**, not through the mount: no FUSE hop, and no cache eviction to tune. `scripts/rclone-upload.sh` wraps this for cron use. The mount cache makes mount writes retryable, not free.
+- Uploads through the mount start only when the writer closes the file (rclone `writes`/`full` semantics), so a producer that streams for hours occupies cache for that whole window.
 - Multipart uploads that are abandoned stay in the bucket invisibly and are billed. The installed `dh-s3-mount-cleanup.timer` aborts those older than 24 hours daily; a bucket lifecycle rule is the more reliable long-term fix.
 - A stale FUSE mount must be diagnosed before detaching. The installer intentionally does not auto-run `fusermount3 -uz` because doing so could detach a live mount with pending I/O.
 - Service restart rate limits prevent an endless aggressive restart loop when a stale mount remains.

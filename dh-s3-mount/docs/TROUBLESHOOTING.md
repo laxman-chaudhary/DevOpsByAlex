@@ -86,19 +86,30 @@ files fine, but a multi-GB file fails near the end (`Input/output error`, a brok
 pipe, or a silent disappearance), and the cron job simply retries the whole file
 forever.
 
-The generated unit runs `--vfs-cache-mode=off`, which rclone documents as unable to
-retry a failed upload and unable to seek in a file opened for write. A single
-transient `5xx`, timeout or dropped connection mid-transfer therefore discards
-everything already streamed, and nothing local survives to resume from.
+Two different causes, so check the mode first:
 
-Do not fix this by pointing rsync at the mount with a bigger block size: rsync only
-sees a FUSE filesystem and cannot drive S3 multipart semantics.
+```bash
+systemctl cat dh-s3-mount | grep -o -- '--vfs-cache-mode=[^ ]*'
+```
+
+With `--vfs-cache-mode=off` rclone cannot retry a failed upload and cannot seek in a
+file opened for write. One transient `5xx`, timeout or dropped connection discards
+everything already streamed, with nothing local to resume from. Versions 1.2 and
+earlier generated that unit.
+
+Since 1.3 the default is `--vfs-cache-mode=full` with a bounded cache, so writes are
+buffered, seekable, and retried. If a host still fails, it either has not been
+reconfigured (see below) or the cache ceiling is being hit.
+
+Either way, do not point rsync at the mount with a bigger block size: rsync only sees
+a FUSE filesystem and cannot drive S3 multipart semantics.
 
 ### Recommended: bypass the mount
 
 `scripts/rclone-upload.sh` drives `rclone move` against the native S3 backend. Files
 above `--s3-upload-cutoff` (200 Mi by default) upload as multipart, each part is
-retried, and the local file is deleted only after the remote copy is verified.
+retried, and the local file is deleted only after the remote copy is verified. No
+cache to size, no FUSE hop.
 
 ```bash
 # One-off
@@ -132,22 +143,40 @@ rclone move /data/staging/ s3remote:YOUR_BUCKET/backups/ \
   --delete-empty-src-dirs --log-file=/var/log/rclone-upload.log --log-level=INFO
 ```
 
-### If other services must keep writing through the mount
-
-The mount cannot be made resumable, but buffering to local disk lets rclone start a
-real multipart upload on close and retry failed parts. That requires a bounded
-cache, otherwise a multi-GB download can fill the root filesystem:
+### Mount-side writes (the default since 1.3)
 
 ```ini
---vfs-cache-mode=writes --vfs-cache-max-size=20G --vfs-cache-max-age=24h
+--vfs-cache-mode=full --cache-dir=/var/cache/dh-s3-mount
+--vfs-cache-max-size=20G --vfs-cache-max-age=24h
 --s3-chunk-size=64Mi --s3-upload-concurrency=4
 ```
 
-In `writes` mode the upload starts only when the writer closes the file, so an
-interrupted producer still restarts from zero. Prefer the direct upload above.
-This project's unit is generated: change the template or add the keys to the
-service via `install.sh`, never by editing `/etc/systemd/system/dh-s3-mount.service`
-by hand, or `--reconfigure` will overwrite it.
+This is what `VFS_CACHE_MODE=full` (the default) renders. Things to know:
+
+- The upload starts only when the writer closes the file, so a producer that streams
+  for hours holds cache for hours. Run `df -h /var/cache/dh-s3-mount` and
+  `du -sh /var/cache/dh-s3-mount` while a big write is in flight.
+- Hitting `VFS_CACHE_MAX_SIZE` does **not** fail the write: rclone evicts older
+  cached objects, and with `full` mode it can also stall instead of evicting what is
+  still open. Under-provisioning the ceiling shows up as slowness, not an error.
+- `writes` is a lighter alternative (`--vfs-cache-mode=writes`): same write
+  semantics, no read cache, less disk.
+- To opt out entirely set `VFS_CACHE_MODE="off"` in `/etc/dh-s3-mount/config.env` and
+  run `sudo ./install.sh --reconfigure`; all cache flags then disappear from the unit.
+
+Never edit `/etc/systemd/system/dh-s3-mount.service` by hand. It is generated, and
+`--reconfigure` overwrites it; change `config.env` (or the template) instead.
+
+### Cache troubleshooting
+
+```bash
+sudo ./install.sh --status                 # mode, cache dir, free space
+journalctl -u dh-s3-mount -n 100 --no-pager | grep -i cache
+sudo systemctl stop dh-s3-mount && sudo rm -rf /var/cache/dh-s3-mount/*   # cold cache
+```
+
+Deleting cache contents while the mount is running can confuse open handles: stop the
+service first. A cold cache only costs re-downloads.
 
 ## Orphaned multipart uploads
 
