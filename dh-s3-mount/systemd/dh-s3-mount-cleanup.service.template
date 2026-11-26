@@ -1,0 +1,16 @@
+# Managed by dh-s3-mount. Do not edit directly; run install.sh --reconfigure.
+[Unit]
+Description=Abort stale S3 multipart uploads ({{S3_BUCKET}})
+Documentation=https://rclone.org/s3/#cleanup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Aborts pending multipart uploads older than 24h, which are invisible to
+# listings but still billed for the parts already stored.
+ExecStart={{RCLONE_BIN}} cleanup {{RCLONE_REMOTE}}:{{S3_BUCKET}} --config=/etc/dh-s3-mount/rclone.conf --log-level=INFO
+Nice=10
+IOSchedulingClass=idle

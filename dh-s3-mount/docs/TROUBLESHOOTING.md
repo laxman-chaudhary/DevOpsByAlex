@@ -79,17 +79,103 @@ To flush in-memory directory listings:
 systemctl kill -s HUP --kill-whom=main dh-s3-mount
 ```
 
-## Large backups and multipart uploads
+## Large uploads (multi-GB) stall or fail through the mount
 
-For large files, bypass the mount and use rclone's retry-capable copy. For example:
+Symptom: `rsync`, `cp` or an application writing into `/mnt/s3-storage` handles small
+files fine, but a multi-GB file fails near the end (`Input/output error`, a broken
+pipe, or a silent disappearance), and the cron job simply retries the whole file
+forever.
+
+The generated unit runs `--vfs-cache-mode=off`, which rclone documents as unable to
+retry a failed upload and unable to seek in a file opened for write. A single
+transient `5xx`, timeout or dropped connection mid-transfer therefore discards
+everything already streamed, and nothing local survives to resume from.
+
+Do not fix this by pointing rsync at the mount with a bigger block size: rsync only
+sees a FUSE filesystem and cannot drive S3 multipart semantics.
+
+### Recommended: bypass the mount
+
+`scripts/rclone-upload.sh` drives `rclone move` against the native S3 backend. Files
+above `--s3-upload-cutoff` (200 Mi by default) upload as multipart, each part is
+retried, and the local file is deleted only after the remote copy is verified.
 
 ```bash
-rclone copy /backups/large-backup.tar.gz s3remote:YOUR_BUCKET_NAME/backups/ \
-  --config=/etc/dh-s3-mount/rclone.conf \
-  --s3-chunk-size=16Mi --s3-upload-concurrency=2 --transfers=1 \
-  --retries=5 --low-level-retries=10 --timeout=10m --progress
+# One-off
+sudo /usr/local/bin/rclone-upload.sh \
+  --log-file /var/log/rclone-upload.log \
+  /root/.qbit/downloads/ s3remote:YOUR_BUCKET/media/Latest/
+
+# Cron, replacing the rsync line
+*/5 * * * * /usr/local/bin/rclone-upload.sh \
+  --log-file /var/log/rclone-upload.log \
+  /root/.qbit/downloads/ s3remote:YOUR_BUCKET/media/Latest/
 ```
 
-Check multipart permissions and the service logs if uploads still fail. `.part` files may be created by the originating application and can indicate a rename-based writing workflow, which is problematic on no-cache S3 mounts.
+The script refuses to run if the source is inside the managed mount, takes a lock
+so overlapping cron runs skip instead of racing, prunes now-empty source
+directories (`--delete-empty-src-dirs`), and defaults to 64 Mi chunks with 4
+concurrent part uploads (`DH_S3_MOUNT_CHUNK_SIZE`, `DH_S3_MOUNT_UPLOAD_CONCURRENCY`,
+`DH_S3_MOUNT_TRANSFERS` override them). `--dry-run` shows what would move.
+
+Avoid `--skip-existing` in a recurring job: with `move`, files already present on the
+remote are left in the source directory and nothing prunes them.
+
+### Manual equivalent
+
+```bash
+rclone move /data/staging/ s3remote:YOUR_BUCKET/backups/ \
+  --config=/etc/dh-s3-mount/rclone.conf \
+  --s3-chunk-size=64Mi --s3-upload-concurrency=4 \
+  --transfers=2 --checkers=4 \
+  --retries=5 --low-level-retries=10 \
+  --delete-empty-src-dirs --log-file=/var/log/rclone-upload.log --log-level=INFO
+```
+
+### If other services must keep writing through the mount
+
+The mount cannot be made resumable, but buffering to local disk lets rclone start a
+real multipart upload on close and retry failed parts. That requires a bounded
+cache, otherwise a multi-GB download can fill the root filesystem:
+
+```ini
+--vfs-cache-mode=writes --vfs-cache-max-size=20G --vfs-cache-max-age=24h
+--s3-chunk-size=64Mi --s3-upload-concurrency=4
+```
+
+In `writes` mode the upload starts only when the writer closes the file, so an
+interrupted producer still restarts from zero. Prefer the direct upload above.
+This project's unit is generated: change the template or add the keys to the
+service via `install.sh`, never by editing `/etc/systemd/system/dh-s3-mount.service`
+by hand, or `--reconfigure` will overwrite it.
+
+## Orphaned multipart uploads
+
+An aborted large upload leaves parts in the bucket that never appear in `ls` or
+`rclone ls` but are still billed. Inspect them with:
+
+```bash
+sudo rclone backend list-multipart-uploads s3remote:YOUR_BUCKET \
+  --config=/etc/dh-s3-mount/rclone.conf
+```
+
+The installer enables a daily timer (`dh-s3-mount-cleanup.timer`, 03:00 by default)
+that runs `rclone cleanup`, which aborts pending uploads older than 24 hours. Check
+or trigger it with:
+
+```bash
+systemctl list-timers 'dh-s3-mount-cleanup*'
+sudo systemctl start dh-s3-mount-cleanup.service
+sudo journalctl -u dh-s3-mount-cleanup.service -n 50 --no-pager
+```
+
+For a different age threshold use the backend command directly, e.g.
+`rclone backend cleanup s3remote:YOUR_BUCKET -o max-age=1h`. A bucket lifecycle rule
+(`AbortIncompleteMultipartUpload`) is the most reliable option because it applies
+regardless of which host or tool started the upload.
+
+If the cleanup service fails with `AccessDenied`, the credentials lack
+`s3:ListBucketMultipartUploads` and `s3:AbortMultipartUpload`. Either grant those for
+the bucket or set `CLEANUP_ENABLED="false"` and rely on a lifecycle rule.
 
 Rclone reference: https://rclone.org/commands/rclone_mount/ and https://rclone.org/s3/

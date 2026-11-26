@@ -14,10 +14,17 @@ CONFIG_SOURCE=""
 PURGE_CONFIG=false
 TMP_CONFIG=""
 TMP_SERVICE=""
+TMP_CLEANUP_SERVICE=""
+TMP_CLEANUP_TIMER=""
 
 log() { printf '[dh-s3-mount] %s\n' "$*"; }
 fail() { printf '[dh-s3-mount] ERROR: %s\n' "$*" >&2; exit 1; }
-cleanup() { [[ -z "$TMP_CONFIG" ]] || rm -f -- "$TMP_CONFIG"; [[ -z "$TMP_SERVICE" ]] || rm -f -- "$TMP_SERVICE"; }
+cleanup() {
+  local f
+  for f in "$TMP_CONFIG" "$TMP_SERVICE" "$TMP_CLEANUP_SERVICE" "$TMP_CLEANUP_TIMER"; do
+    [[ -z "$f" ]] || rm -f -- "$f"
+  done
+}
 trap cleanup EXIT
 
 usage() {
@@ -58,6 +65,7 @@ read_settings() {
   S3_ENDPOINT='' S3_BUCKET='' S3_ACCESS_KEY='' S3_SECRET_KEY=''
   S3_REGION='' S3_FORCE_PATH_STYLE=true RCLONE_REMOTE=s3remote
   MOUNT_PATH=/mnt/s3-storage SERVICE_NAME=dh-s3-mount
+  CLEANUP_ENABLED=true CLEANUP_TIME=03:00
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
@@ -76,6 +84,8 @@ read_settings() {
       RCLONE_REMOTE) RCLONE_REMOTE="$value" ;;
       MOUNT_PATH) MOUNT_PATH="$value" ;;
       SERVICE_NAME) SERVICE_NAME="$value" ;;
+      CLEANUP_ENABLED) CLEANUP_ENABLED="$value" ;;
+      CLEANUP_TIME) CLEANUP_TIME="$value" ;;
       *) fail "Unknown configuration key: $key" ;;
     esac
   done < "$src"
@@ -91,6 +101,8 @@ validate_settings() {
   [[ "$MOUNT_PATH" =~ ^/[A-Za-z0-9_/-]+$ && "$MOUNT_PATH" != *..* && "$MOUNT_PATH" != / ]] || fail 'MOUNT_PATH must be a safe absolute directory (no spaces or ..).'
   [[ "$S3_REGION" =~ ^[A-Za-z0-9-]*$ ]] || fail 'Invalid S3_REGION.'
   [[ "$S3_FORCE_PATH_STYLE" == true || "$S3_FORCE_PATH_STYLE" == false ]] || fail 'S3_FORCE_PATH_STYLE must be true or false.'
+  [[ "$CLEANUP_ENABLED" == true || "$CLEANUP_ENABLED" == false ]] || fail 'CLEANUP_ENABLED must be true or false.'
+  [[ "$CLEANUP_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || fail 'CLEANUP_TIME must be HH:MM in 24-hour form.'
 }
 
 # Expand literal placeholders; do not run shell evaluation on secrets.
@@ -105,6 +117,8 @@ render_template() {
     line="${line//\{\{S3_SECRET_KEY\}\}/$S3_SECRET_KEY}"
     line="${line//\{\{S3_REGION\}\}/$S3_REGION}"
     line="${line//\{\{S3_FORCE_PATH_STYLE\}\}/$S3_FORCE_PATH_STYLE}"
+    line="${line//\{\{SERVICE_NAME\}\}/$SERVICE_NAME}"
+    line="${line//\{\{CLEANUP_TIME\}\}/$CLEANUP_TIME}"
     line="${line//\{\{MOUNT_PATH\}\}/$MOUNT_PATH}"
     line="${line//\{\{RCLONE_BIN\}\}/$RCLONE_BIN}"
     line="${line//\{\{FUSERMOUNT_BIN\}\}/$FUSERMOUNT_BIN}"
@@ -162,20 +176,35 @@ status() {
   systemctl is-enabled "$service.service" || true
   systemctl is-active "$service.service" || true
   findmnt --mountpoint "$path" || true
+  if [[ -f "$SYSTEMD_DIR/${service}-cleanup.timer" ]]; then
+    printf 'Multipart cleanup timer: %s-cleanup.timer\n' "$service"
+    systemctl is-enabled "${service}-cleanup.timer" || true
+    systemctl is-active "${service}-cleanup.timer" || true
+    systemctl list-timers --no-pager "${service}-cleanup.timer" 2>/dev/null || true
+  else
+    printf 'Multipart cleanup timer: not installed\n'
+  fi
   systemctl is-active --quiet "$service.service" && findmnt -rn --mountpoint "$path" >/dev/null
 }
 
 uninstall() {
-  local unit path svc
+  local unit path svc cleanup_unit cleanup_timer
   if ! get_existing_service; then log 'No managed installation found; nothing to uninstall.'; return 0; fi
   svc="$EXISTING_SERVICE"; unit="$SYSTEMD_DIR/$svc.service"
+  cleanup_unit="$SYSTEMD_DIR/${svc}-cleanup.service"
+  cleanup_timer="$SYSTEMD_DIR/${svc}-cleanup.timer"
   managed_unit "$unit" || fail "Refusing to remove service not managed by this project: $unit"
   path="$(cat "$STATE_DIR/mount.path")"
+  # The cleanup units never touch the mount, so they are stopped even when a
+  # stuck mount would block the rest of the uninstall.
+  systemctl disable --now "${svc}-cleanup.timer" >/dev/null 2>&1 || true
   log "Stopping $svc.service (complete all file operations first)."
   systemctl stop "$svc.service" || fail 'Service stop failed. Check open files; no files removed.'
   if findmnt -rn --mountpoint "$path" >/dev/null 2>&1; then fail "Still mounted at $path; refusing to remove the service."; fi
   systemctl disable "$svc.service" >/dev/null
   rm -f -- "$unit"
+  if managed_unit "$cleanup_unit"; then rm -f -- "$cleanup_unit"; fi
+  if managed_unit "$cleanup_timer"; then rm -f -- "$cleanup_timer"; fi
   systemctl daemon-reload
   if [[ -d "$path" ]]; then rmdir -- "$path" 2>/dev/null || true; fi
   if [[ "$PURGE_CONFIG" == true ]]; then
@@ -215,9 +244,13 @@ ensure_dependencies
 install -d -m 700 "$STATE_DIR"
 TMP_CONFIG="$(mktemp "$STATE_DIR/.rclone.XXXXXX")"
 TMP_SERVICE="$(mktemp "$STATE_DIR/.service.XXXXXX")"
+TMP_CLEANUP_SERVICE="$(mktemp "$STATE_DIR/.cleanup-service.XXXXXX")"
+TMP_CLEANUP_TIMER="$(mktemp "$STATE_DIR/.cleanup-timer.XXXXXX")"
 render_template "$PROJECT_DIR/config/rclone.conf.template" "$TMP_CONFIG"
 render_template "$PROJECT_DIR/systemd/dh-s3-mount.service.template" "$TMP_SERVICE"
-chmod 600 "$TMP_CONFIG" "$TMP_SERVICE"
+render_template "$PROJECT_DIR/systemd/dh-s3-mount-cleanup.service.template" "$TMP_CLEANUP_SERVICE"
+render_template "$PROJECT_DIR/systemd/dh-s3-mount-cleanup.timer.template" "$TMP_CLEANUP_TIMER"
+chmod 600 "$TMP_CONFIG" "$TMP_SERVICE" "$TMP_CLEANUP_SERVICE" "$TMP_CLEANUP_TIMER"
 
 log "Checking S3 bucket access: $S3_BUCKET"
 if ! "$RCLONE_BIN" --config "$TMP_CONFIG" lsf "$RCLONE_REMOTE:$S3_BUCKET" --max-depth 1 >/dev/null; then
@@ -225,6 +258,11 @@ if ! "$RCLONE_BIN" --config "$TMP_CONFIG" lsf "$RCLONE_REMOTE:$S3_BUCKET" --max-
 fi
 unit="$SYSTEMD_DIR/$SERVICE_NAME.service"
 if [[ -f "$unit" ]] && ! managed_unit "$unit"; then fail "Unit exists and is not managed by this project: $unit"; fi
+cleanup_unit="$SYSTEMD_DIR/${SERVICE_NAME}-cleanup.service"
+cleanup_timer="$SYSTEMD_DIR/${SERVICE_NAME}-cleanup.timer"
+for f in "$cleanup_unit" "$cleanup_timer"; do
+  if [[ -f "$f" ]] && ! managed_unit "$f"; then fail "Unit exists and is not managed by this project: $f"; fi
+done
 
 if [[ "$ACTION" == install ]]; then
   check_mount_free "$MOUNT_PATH"
@@ -252,8 +290,25 @@ install -m 644 "$TMP_SERVICE" "$unit"
 printf '%s\n' "$SERVICE_NAME" > "$STATE_DIR/service.name"
 printf '%s\n' "$MOUNT_PATH" > "$STATE_DIR/mount.path"
 chmod 600 "$STATE_DIR/service.name" "$STATE_DIR/mount.path"
+# Multipart cleanup is installed as a separate timer so a failing clean up can
+# never block the mount, and so it can be disabled per host.
+if [[ "$CLEANUP_ENABLED" == true ]]; then
+  install -m 644 "$TMP_CLEANUP_SERVICE" "$cleanup_unit"
+  install -m 644 "$TMP_CLEANUP_TIMER" "$cleanup_timer"
+else
+  systemctl disable --now "${SERVICE_NAME}-cleanup.timer" >/dev/null 2>&1 || true
+  rm -f -- "$cleanup_unit" "$cleanup_timer"
+  log 'Multipart cleanup timer disabled (CLEANUP_ENABLED=false).'
+fi
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME.service" >/dev/null
+if [[ "$CLEANUP_ENABLED" == true ]]; then
+  if systemctl enable --now "${SERVICE_NAME}-cleanup.timer" >/dev/null 2>&1; then
+    log "Multipart cleanup timer enabled: ${SERVICE_NAME}-cleanup.timer at $CLEANUP_TIME daily."
+  else
+    log "WARNING: ${SERVICE_NAME}-cleanup.timer could not be enabled; check systemctl status."
+  fi
+fi
 if ! systemctl start "$SERVICE_NAME.service"; then
   log "Service failed to start; inspect: journalctl -u $SERVICE_NAME.service -n 80 --no-pager"
   fail 'Service start failed.'

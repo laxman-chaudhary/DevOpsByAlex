@@ -1,0 +1,12 @@
+# Managed by dh-s3-mount. Do not edit directly; run install.sh --reconfigure.
+[Unit]
+Description=Daily S3 multipart cleanup for {{S3_BUCKET}}
+
+[Timer]
+OnCalendar=*-*-* {{CLEANUP_TIME}}:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit={{SERVICE_NAME}}-cleanup.service
+
+[Install]
+WantedBy=timers.target

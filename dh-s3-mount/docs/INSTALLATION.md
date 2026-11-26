@@ -6,7 +6,10 @@
 4. Before install, check `findmnt /mnt/s3-storage`. If a manual mount exists, finish uploads and unmount normally (`fusermount3 -u /mnt/s3-storage`).
 5. Run `sudo ./install.sh`, then `sudo ./install.sh --status`.
 6. Inspect `systemctl status dh-s3-mount.service` and `findmnt /mnt/s3-storage`.
-7. Reboot only during a maintenance window, then rerun the verification.
+7. Confirm the multipart cleanup timer: `systemctl list-timers 'dh-s3-mount-cleanup*'` (disable with `CLEANUP_ENABLED="false"`).
+8. Install the upload helper for any cron-driven transfer:
+   `sudo install -m 755 scripts/rclone-upload.sh /usr/local/bin/rclone-upload.sh`
+9. Reboot only during a maintenance window, then rerun the verification.
 
 The installer checks commands and installs missing `rclone`, `fuse3`, `util-linux`, and `psmisc` packages through apt. It does not try to install a different OS package manager.
 
